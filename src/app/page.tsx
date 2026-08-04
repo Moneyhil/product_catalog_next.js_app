@@ -1,0 +1,13 @@
+import { getAllProducts } from '../lib/api';
+import ProductGrid from '../components/ProductGrid.tsx';
+
+export default async function Home() {
+  const products = await getAllProducts();
+
+  return (
+    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-8 sm:px-6 lg:px-8">
+      <h1 className="mb-6 text-3xl font-semibold text-slate-900">Product Catalog</h1>
+      <ProductGrid products={products} />
+    </main>
+  );
+}
