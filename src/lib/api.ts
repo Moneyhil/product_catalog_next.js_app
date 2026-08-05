@@ -38,3 +38,13 @@ export async function getProductsByCategory(category: string): Promise<Product[]
     `Failed to fetch products for category ${category}`
   );
 }
+export async function getRelatedProducts(
+  category: string,
+  currentId: number
+): Promise<Product[]> {
+  const products = await getProductsByCategory(category);
+
+  return products
+    .filter((product) => product.id !== currentId)
+    .slice(0, 4);
+}

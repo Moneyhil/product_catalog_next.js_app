@@ -1,0 +1,27 @@
+'use client';
+
+import Link from 'next/link';
+import { useFavorites } from '@/hooks/useFavorites';
+
+export default function Navbar() {
+  const { favorites } = useFavorites();
+
+  return (
+    <header className="border-b border-slate-200 bg-white/95 backdrop-blur">
+      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+        <Link href="/" className="text-lg font-semibold text-slate-900">
+          Product Catalog
+        </Link>
+
+        <nav className="flex items-center gap-4 text-sm font-medium text-slate-600">
+          <Link href="/favorites" className="flex items-center gap-2 transition hover:text-slate-900">
+            Favorites
+            <span className="rounded-full bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white">
+              {favorites.length}
+            </span>
+          </Link>
+        </nav>
+      </div>
+    </header>
+  );
+}
