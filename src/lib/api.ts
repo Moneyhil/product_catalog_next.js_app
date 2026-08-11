@@ -1,46 +1,63 @@
+import {
+  collection,
+  doc,
+  type DocumentData,
+  getDoc,
+  getDocs,
+  query,
+  type QueryDocumentSnapshot,
+  where,
+} from "firebase/firestore";
+
+import { db } from "@/lib/firebase/client";
 import type { Product } from "./types";
 
-const BASE_URL = "https://fakestoreapi.com/products";
+const productsCollection = collection(db, "products");
 
-async function fetchJson<T>(url: string, errorMessage: string): Promise<T> {
-  try {
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      throw new Error(`${errorMessage}: ${response.status} ${response.statusText}`);
-    }
-
-    return response.json() as Promise<T>;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${errorMessage}: ${message}`);
-  }
+function toProduct(productDocument: QueryDocumentSnapshot<DocumentData>): Product {
+  return {
+    ...(productDocument.data() as Omit<Product, "id">),
+    id: Number(productDocument.id),
+  };
 }
 
 export async function getAllProducts(): Promise<Product[]> {
-  return fetchJson<Product[]>(BASE_URL, "Failed to fetch all products");
+  const productsSnapshot = await getDocs(productsCollection);
+  return productsSnapshot.docs.map(toProduct);
 }
 
 export async function getProductById(id: string | number): Promise<Product> {
-  return fetchJson<Product>(
-    `${BASE_URL}/${id}`,
-    `Failed to fetch product with id ${id}`
-  );
+  const productSnapshot = await getDoc(doc(db, "products", String(id)));
+
+  if (!productSnapshot.exists()) {
+    throw new Error(`Product with id ${id} was not found`);
+  }
+
+  return toProduct(productSnapshot);
 }
 
 export async function getCategories(): Promise<string[]> {
-  return fetchJson<string[]>(`${BASE_URL}/categories`, "Failed to fetch categories");
+  const productsSnapshot = await getDocs(productsCollection);
+  return [
+    ...new Set(
+      productsSnapshot.docs.map((productDocument) => productDocument.data().category),
+    ),
+  ].sort();
 }
 
 export async function getProductsByCategory(category: string): Promise<Product[]> {
-  return fetchJson<Product[]>(
-    `${BASE_URL}/category/${category}`,
-    `Failed to fetch products for category ${category}`
+  const productsQuery = query(
+    productsCollection,
+    where("category", "==", category),
   );
+  const productsSnapshot = await getDocs(productsQuery);
+
+  return productsSnapshot.docs.map(toProduct);
 }
+
 export async function getRelatedProducts(
   category: string,
-  currentId: number
+  currentId: number,
 ): Promise<Product[]> {
   const products = await getProductsByCategory(category);
 

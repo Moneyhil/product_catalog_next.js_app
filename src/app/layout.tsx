@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { ClerkProvider } from "@clerk/nextjs";
 import { FavoritesProvider } from "@/context/FavoritesContext";
 import Navbar from "@/components/Navbar";
 import "./globals.css";
@@ -21,16 +22,18 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">
-        <FavoritesProvider>
-          <Navbar />
-          {children}
-        </FavoritesProvider>
-      </body>
-    </html>
+    <ClerkProvider telemetry={false}>
+      <html
+        lang="en"
+        className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      >
+        <body className="min-h-full flex flex-col">
+          <FavoritesProvider>
+            <Navbar />
+            {children}
+          </FavoritesProvider>
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }

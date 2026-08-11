@@ -1,10 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import { SignOutButton, useAuth } from '@clerk/nextjs';
 import { useFavorites } from '@/hooks/useFavorites';
 
 export default function Navbar() {
   const { favorites } = useFavorites();
+  const { isSignedIn } = useAuth();
 
   return (
     <header className="border-b border-slate-200 bg-white/95 backdrop-blur">
@@ -20,6 +22,23 @@ export default function Navbar() {
               {favorites.length}
             </span>
           </Link>
+
+          {isSignedIn ? (
+            <>
+            <Link href="/profile" className="transition hover:text-slate-900">
+              Profile
+            </Link>
+            <SignOutButton redirectUrl="/">
+              <button type="button" className="transition hover:text-slate-900">
+                Sign Out
+              </button>
+            </SignOutButton>
+            </>
+          ) : (
+            <Link href="/sign-in" className="transition hover:text-slate-900">
+              Sign In
+            </Link>
+          )}
         </nav>
       </div>
     </header>

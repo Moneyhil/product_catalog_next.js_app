@@ -9,20 +9,21 @@ interface FavoriteButtonProps {
 }
 
 export default function FavoriteButton({ product }: FavoriteButtonProps) {
-  const { isFavorite, toggleFavorite } = useFavorites();
+  const { isFavorite, isSignedIn, toggleFavorite } = useFavorites();
   const favorite = isFavorite(product.id);
 
   const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    toggleFavorite(product);
+    void toggleFavorite(product);
   };
 
   return (
     <button
       type="button"
       onClick={handleClick}
-      className={`rounded-full bg-white/90 p-2 shadow-sm transition hover:scale-105 ${favorite ? "text-red-500" : "text-slate-500"}`}
+      disabled={!isSignedIn}
+      className={`rounded-full bg-white/90 p-2 shadow-sm transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50 ${favorite ? "text-red-500" : "text-slate-500"}`}
       aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
     >
       <svg
