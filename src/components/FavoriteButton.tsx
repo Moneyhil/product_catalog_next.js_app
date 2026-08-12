@@ -1,7 +1,9 @@
 "use client";
 
 import type { MouseEvent } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { useFavorites } from "@/hooks/useFavorites";
+import { useToast } from "@/components/Toast";
 import type { Product } from "@/lib/types";
 
 interface FavoriteButtonProps {
@@ -9,12 +11,23 @@ interface FavoriteButtonProps {
 }
 
 export default function FavoriteButton({ product }: FavoriteButtonProps) {
-  const { isFavorite, isSignedIn, toggleFavorite } = useFavorites();
+  const { isSignedIn } = useAuth();
+  const { isFavorite, toggleFavorite } = useFavorites();
+  const { showToast } = useToast();
   const favorite = isFavorite(product.id);
 
   const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
+
+    if (!isSignedIn) {
+      showToast({
+        message: "Create an account to keep track of items you love.",
+        action: { label: "Sign up", href: "/sign-up" },
+      });
+      return;
+    }
+
     void toggleFavorite(product);
   };
 
@@ -22,8 +35,7 @@ export default function FavoriteButton({ product }: FavoriteButtonProps) {
     <button
       type="button"
       onClick={handleClick}
-      disabled={!isSignedIn}
-      className={`rounded-full bg-white/90 p-2 shadow-sm transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-50 ${favorite ? "text-red-500" : "text-slate-500"}`}
+      className={`rounded-full bg-white/90 p-2 shadow-sm transition hover:scale-105 ${favorite ? "text-red-500" : "text-slate-500"}`}
       aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
     >
       <svg
