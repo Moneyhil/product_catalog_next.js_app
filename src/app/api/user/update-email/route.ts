@@ -40,16 +40,13 @@ export async function PATCH(request: Request) {
       verified: true,
     });
 
-    await client.emailAddresses.updateEmailAddress({
-      emailAddressId: created.id,
+    await client.emailAddresses.updateEmailAddress(created.id, {
       primary: true,
     });
 
     if (existingPrimary?.id) {
       try {
-        await client.emailAddresses.deleteEmailAddress({
-          emailAddressId: existingPrimary.id,
-        });
+        await client.emailAddresses.deleteEmailAddress(existingPrimary.id);
       } catch {
         console.warn("Could not remove old primary email");
       }
