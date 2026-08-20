@@ -17,6 +17,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-icons": "^5.7.0",
+    "stripe": "^16.8.0",
     "svix": "^1.99.1"
   },
   "devDependencies": {

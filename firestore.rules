@@ -1,0 +1,117 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function currentUid() {
+      return request.auth.uid;
+    }
+
+    function hasClerkRole(role) {
+      return isSignedIn()
+        && request.auth.token.role == role;
+    }
+
+    function isAdmin() {
+      return hasClerkRole("admin");
+    }
+
+    // ---------- products ----------
+    // Public read. Client-side write requires Clerk admin custom claim
+    // (minted via Clerk/Firebase JWT template). Server writes bypass rules.
+
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ---------- carts ----------
+    // Document id == clerk user id. Owner only.
+
+    match /carts/{uid} {
+      allow read, write: if isSignedIn() && currentUid() == uid;
+    }
+
+    // ---------- favorites ----------
+    // Two shapes are supported:
+    //   A) users/{uid}/favorites/{favId} subcollection (current codebase).
+    //   B) standalone /favorites/{favId} top-level collection with clerkId field
+    //      (forward-compat if you ever split it out).
+
+    match /users/{uid} {
+      allow read, write: if isSignedIn() && currentUid() == uid;
+
+      match /favorites/{favId} {
+        allow read, write: if isSignedIn() && currentUid() == uid;
+      }
+    }
+
+    match /favorites/{favId} {
+      allow read, write: if isSignedIn()
+        && resource.data.clerkId == currentUid();
+    }
+
+    // ---------- customers ----------
+    // Document id == clerk user id. Owner read-only. Writes only via webhook/server.
+
+    match /customers/{uid} {
+      allow read: if isSignedIn() && currentUid() == uid;
+      allow write: if false;
+    }
+
+    // ---------- orders ----------
+
+    function orderIsDraftShape(data) {
+      return data.keys().hasOnly([
+        "clerkId",
+        "items",
+        "total",
+        "status",
+        "createdAt"
+      ])
+        && data.status == "draft";
+    }
+
+    function statusFieldChanged() {
+      return isSignedIn()
+        && "status" in request.resource.data
+        && resource.data.status != request.resource.data.status;
+    }
+
+    match /orders/{orderId} {
+      allow read: if isSignedIn()
+        && resource.data.clerkId == currentUid();
+
+      allow create: if isSignedIn()
+        && request.resource.data.clerkId == currentUid()
+        && orderIsDraftShape(request.resource.data);
+
+      // Clients cannot change status. Server (Admin SDK) bypasses rules.
+      allow update: if isSignedIn()
+        && resource.data.clerkId == currentUid()
+        && !statusFieldChanged();
+
+      allow delete: if false;
+    }
+
+    // ---------- reviews ----------
+    // Reviews not yet written in this codebase. For future use:
+    // review docs carry a `clerkId` author field (matching clerk user id).
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+
+      allow create: if isSignedIn()
+        && request.resource.data.clerkId == currentUid();
+
+      allow update, delete: if isSignedIn()
+        && resource.data.clerkId == currentUid();
+    }
+
+  }
+}

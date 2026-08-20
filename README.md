@@ -285,3 +285,136 @@ Fake Store API (product data) endpoints are documented at [fakestoreapi.com](htt
 - [x] Role-based access control (admin ↔ customer views + `/admin` dashboard)
 - [x] Email change sync (App → Clerk → webhook → Firestore)
 - [ ] Deploy on Vercel
+
+---
+
+## Enhancement Log (Latest Additions)
+
+The following capabilities were added on top of the base product catalog:
+
+### Toast Notification System
+- **`ToastProvider`** (`src/components/Toast.tsx`) + `useToast()` hook.
+- Non-blocking, dismissible toast stack anchored fixed bottom-center with 4s auto-dismiss; optional `<Link>` CTA on each toast.
+- **Signed-out favorites guard:** clicking the heart on `FavoriteButton.tsx` while signed out triggers a sign-up prompt toast ("Create an account to track favorites…") with `/sign-up` CTA instead of making the API call.
+
+### Shopping Cart (Guest + Signed-in)
+- **`CartContext`** (`src/context/CartContext.tsx`) + `useCart()` hook.
+  - **Guests:** `localStorage["cart"]` (`{ id, title, price, image, quantity }[]`).
+  - **Signed-in users:** `GET` / `PUT` `/api/cart` → top-level Firestore collection `carts/{clerkId} { items: CartItem[], updatedAt }`.
+  - **Merge-on-sign-in:** same `product.id` → quantities summed; localStorage cleared after sync; coalescing writes prevent empty-cart flash.
+- **`/api/cart/route.ts`** — validated + deduped server-side read/write via Admin SDK; owner-gated by `auth()` userId.
+- **Cart UI** (`/cart/page.tsx`):
+  - Unit price, line total, and grand total shown in both USD and **PKR** (`USD × 83` via centralized `formatPKR()` helper).
+  - Quantity +/- steppers + remove buttons.
+  - Signed-out users see "Sign in to checkout" → `/sign-in?redirect_url=/cart`.
+  - Signed-in users POST to `/api/checkout` → redirects to Stripe hosted checkout.
+- **Navbar cart badge** shows live item count.
+
+### Shared Currency Helper
+- **`src/lib/currency.ts`** exposes:
+  - `formatPKR(usd: number): string` = `PKR ${Math.round(usd * 83).toLocaleString("en-PK")}` (centralized PKR conversion).
+  - `formatUSD(usd: number): string`.
+- Used on product cards, product detail page, cart page, order listings, order details, and order totals.
+
+### Stripe Checkout & Payment Flow
+- **`/api/checkout/route.ts`**:
+  - Auth-gated; validates cart non-empty.
+  - Creates a **draft** order in `orders/{orderId} { status: "draft", items, clerkId, total, createdAt }`.
+  - Creates a Stripe Checkout Session (`ui_mode: "hosted"`, `payment_method_types: ["card"]` only, `shipping_address_collection.allowed_countries: ["PK"]`, `phone_number_collection.enabled: true`).
+  - `success_url` uses literal concatenation for the `{CHECKOUT_SESSION_ID}` placeholder (URLSearchParams encodes `{}` which breaks Stripe substitution).
+  - Marks order `status: "pending" + stripeSessionId` before returning `{ orderId, sessionUrl }`.
+- **`/order/success/page.tsx`** (server component):
+  - Reads `order_id` + `session_id` from query; cleans the literal `{CHECKOUT_SESSION_ID}` placeholder if present.
+  - Fetches order by Admin SDK; shows color-coded status badge, item count, total USD + "≈ PKR".
+  - **Pending state:** amber "Finalizing your order… refresh or check your account" banner.
+  - Embedded **`order-success-client.tsx`** polls `/api/checkout/verify-session` every 2s; when session reports paid, waits 1.5s then `router.refresh()`.
+  - CTAs: Keep browsing → `/`, View My Account → `/account`.
+- **`/api/checkout/verify-session/route.ts`**:
+  - Signed-in only; `stripe.checkout.sessions.retrieve(id, { expand: ['payment_intent'] })`.
+  - Owner-gated via `session.metadata.clerkId === auth().userId`.
+  - Returns `{ paymentStatus, status, amountTotal, paymentIntentStatus, orderId, customerEmail }`.
+
+### Stripe Webhook (Atomic Transactional Fulfillment)
+- **`/api/webhooks/stripe/route.ts`**:
+  - `bodyParser: false`; reads raw bytes via custom `readRawBody()` → `stripe.webhooks.constructEvent()`.
+  - Handles **`checkout.session.completed`** only; always returns 200 to Stripe after signature verification even on internal errors.
+  - Single **Firestore Admin SDK `runTransaction`** covering:
+    1. All reads first (orderRef.get → customerRef.get) — required ordering for Firestore transactions.
+    2. Order `status → "paid"`; persists `phone`, `shipping` (PK address normalized `postal_code → postalCode`), `stripePaymentIntentId`, `customerEmail`, `amountPaidUsd`, timestamps.
+    3. Customer **upsert** into `customers/{clerkId}`:
+       - New: `{ clerkId, stripeCustomerId, name, email, totalOrders: 1, totalSpent: amountPaidUsd, createdAt, updatedAt }`.
+       - Existing: `totalOrders++`, `totalSpent += amountPaidUsd`, touch `updatedAt`.
+    4. Clear matching user cart → `carts/{clerkId} { items: [], updatedAt }`.
+  - **Idempotency:** skips the entire fulfillment if `order.status === "paid"` already.
+
+### Orders Pages
+- **`/account/orders/page.tsx`** (server component):
+  - Firestore query `where("clerkId","==",userId).where("status","not-in",["draft"]).orderBy("createdAt","desc")`.
+  - Row shows order short-ID, formatted date, total USD + PKR, color-coded status badge.
+  - Empty state: **Start Shopping → `/products`** + Go to cart.
+  - **Requires composite index:** `(clerkId ASC, status NOT_IN, createdAt DESC)`.
+- **`/account/orders/[orderId]/page.tsx`**:
+  - Guards: signed out → `/sign-in`; doc missing, owner mismatch, or `status === "draft"` → "Order not found" card.
+  - Line items table with image/title/qty/unit/subtotal USD+PKR; totals footer; status badge; pending amber finalizing banner if needed.
+
+### Account Area (`/account/*`) — Server-Side Protected
+- **`/account/layout.tsx`** (async server component):
+  - **No Clerk session** → redirect `/sign-in?redirect_url=/account`.
+  - **No `customers/{clerkId}` doc** → inline `UnlockAccountScreen` (no redirect loop): "Place your first order to unlock your customer dashboard…" **Start Shopping → `/products`** + Back to cart.
+  - Customer exists → header stats card (display name, email, `N orders placed · lifetime spend X.XX USD`).
+  - **Sidebar:** `Orders → /account/orders` only (Profile/Favorites/Settings removed — already in top navbar; Products removed — top navbar Products link is the main entry point).
+- **`/account/page.tsx`**: `permanentRedirect("/account/orders")` (customer lands on order list).
+
+### Customer-Status-Aware Navigation
+1. **Navbar conditional "Order History / My Account" link:**
+   - **Root layout** (`src/app/layout.tsx`) is now `async`; calls `auth()` → if userId present, runs a server-side `adminDb.collection("customers").doc(userId).get()` existence check (try/catch guarded → `false` on error), and passes `showMyAccountLink: boolean` down to `<Navbar />`.
+   - Navbar (`Navbar.jsx`) renders `<Link href="/account">Order History</Link>` **only when** `showMyAccountLink && isSignedIn`. Signed-out users and signed-in users with no first-order (no customer doc) never see the link.
+2. **Post-sign-in landing page smart redirect:**
+   - `src/app/post-sign-in/page.tsx` runs the user-sync block unchanged; then — **only when** no explicit `redirect_url` was passed (i.e., the user wasn't mid-flow to a protected page) and `dashboardTarget` from the sanitizer is empty and the user is non-admin — checks `customers/{user.id}.exists` and **redirects to `/account`** for returning customers instead of dropping them at `/`.
+   - Explicit `redirect_url` always wins; admins still go to `/admin` as before; brand-new signups with no orders keep the original default of `/`.
+3. **"Continue Shopping / Start Shopping → /products" CTAs** already present in:
+   - Account unlock screen (new customers)
+   - Empty orders list
+   - Order success page
+4. **Navbar order (left → right):** `Product Catalog (logo → /) → Products (→ / home grid) → Cart → Favorites → [Order History (conditional)] → Profile → Sign Out / Sign In`. The "Products" entry links to `/` (the home product grid) because there is no separate `/products` listing route in this codebase — all discovery lives on the homepage.
+
+### Middleware & Public Routes
+- **`src/proxy.ts`** (`clerkMiddleware` + `createRouteMatcher`):
+  - Public routes include `/`, `/sign-in*`, `/sign-up*`, `/profile*`, `/order/success*`, `/post-sign-in*`, `/api/webhooks*` (with an explicit `/api/webhooks/stripe` defensive entry), `/api/test-firebase*`.
+  - Matcher regex excludes `_next/static`, `_next/image`, favicon, and image assets; also excludes `/api/webhooks(.*)` from middleware enforcement so Stripe server-to-server POSTs are never 401'd.
+  - Signed-out hits on `/account*` bounce through `/sign-in?returnBackUrl=/post-sign-in?redirect_url=<protected path>` so the post-sign-in sync/redirect runs before navigation.
+
+### Firestore Security Rules (`firestore.rules`)
+- Helper predicates: `isSignedIn`, `currentUid`, `hasClerkRole(role)`, `isAdmin` (custom claims).
+- **orders:**
+  - `create`: `status == "draft"` + `keys().hasOnly([clerkId, items, total, status, createdAt])` + `request.resource.data.clerkId == currentUid()`.
+  - `read`: owner-only (`resource.data.clerkId == currentUid()`).
+  - `update`: owner-only **AND** `!statusFieldChanged()` (status immutable via client; only Admin SDK/webhook flips to paid).
+  - `delete`: `false`.
+- **customers:** owner read-only; zero client writes (webhook/Admin SDK only).
+- **carts/{uid}:** owner read + write only.
+- **users/{uid}/favorites/{id}:** owner read + write only (favorites subcollection pattern).
+- **products:** public read; writes require `hasClerkRole("admin")`.
+- **reviews:** public read; create binds `clerkId == currentUid`; owner update/delete.
+
+### Vercel Deployment Checklist
+1. Env vars in Vercel Project Settings → Environment Variables (all scopes unless noted):
+   - **Clerk:** `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`, `NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up`, `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/post-sign-in`, `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/post-sign-in`, `CLERK_WEBHOOK_SECRET` (from Clerk Dashboard webhook endpoint), `CLERK_JWT_ISSUER_DOMAIN` (if custom domain/Custom JWT template used).
+   - **Firebase client:** `NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`, `NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`, `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID`.
+   - **Firebase Admin:** `FIREBASE_SERVICE_ACCOUNT_BASE64` — base64 of the full service-account JSON (server-only scopes).
+   - **Stripe:** `STRIPE_SECRET_KEY` (server-only), `STRIPE_WEBHOOK_SECRET` (`whsec_…` from Stripe Dashboard → Webhooks → hosted endpoint signing secret, server-only).
+2. **Clerk Dashboard paths:** add the Vercel production (and preview) domains to **Paths → Domains** so sessions work on non-localhost. Configure the Svix webhook endpoint as `https://<your-vercel-domain>/api/webhooks/clerk` with the events `user.created`, `user.updated`, `user.deleted`.
+3. **Firebase console (Auth → Settings → Authorized domains):** add the Vercel production/preview domains so Firebase client SDK can initialize from the browser.
+4. **Stripe Dashboard → Webhooks:** add hosted endpoint `https://<your-vercel-domain>/api/webhooks/stripe` listening to `checkout.session.completed`; place signing secret into `STRIPE_WEBHOOK_SECRET` env var. Enable payment methods = card only (disable Link/Apple Pay/Payment Request Button account-wide if they still appear per Stripe settings override).
+5. **Firestore composite index:** deploy once via `firebase deploy --only firestore:rules` and then trigger an orders list load from a real user; follow the "index required" link in browser console (or build manually on `orders` collection: fields `clerkId` ASC + `status` array-contains/NOT_IN + `createdAt` DESC).
+6. Redeploy env vars: `vercel env pull` is not needed; Vercel injects them on deploy. Trigger a production redeploy after env vars are set the first time so they take effect.
+
+### Files Added / Changed Summary (Enhancement Rounds)
+- **New lib helpers:** `src/lib/currency.ts`, `src/lib/types.ts` extended with `Customer`, `CartItem`, `Order`, `OrderStatus`.
+- **Context / hooks:** `src/context/CartContext.tsx`, `src/hooks/useCart.ts`, `src/context/FavoritesContext.tsx`, `src/hooks/useFavorites.ts`.
+- **Components:** `src/components/Toast.tsx` (Provider + useToast), `FavoriteButton.tsx` (signed-out guard), `AddToCartButton.tsx`, Navbar updated with conditional customer link, `order-success-client.tsx` (polling).
+- **App routes:** `/cart/page.tsx`, `/order/success/page.tsx` (+ `order-success-client.tsx`), `/account/layout.tsx` + `/account/page.tsx` (redirect) + `/account/orders/page.tsx` + `/account/orders/[orderId]/page.tsx`, `/post-sign-in/page.tsx` extended (customer-aware redirect).
+- **API routes:** `/api/cart/route.ts`, `/api/checkout/route.ts`, `/api/checkout/verify-session/route.ts`, `/api/webhooks/stripe/route.ts`.
+- **Middleware / proxy:** `src/proxy.ts` — public routes, dashboard redirect loop fix, webhook carve-out.
+- **Security:** `firestore.rules` deployed.
+- **Config / plumbing:** Root layout server-side `auth()` + customer-exists flag propagation to Navbar.

@@ -5,6 +5,8 @@ import {
   getRelatedProducts,
 } from "@/lib/api";
 import FavoriteButton from "@/components/FavoriteButton";
+import AddToCartButton from "@/components/AddToCartButton";
+import { formatPKR } from "@/lib/currency";
 import RatingStars from "@/components/RatingStars";
 
 export default async function ProductPage({
@@ -67,7 +69,7 @@ export default async function ProductPage({
           </div>
 
           <div className="mt-6 text-4xl font-extrabold text-indigo-600">
-            PKR {Math.round(product.price * 83)}
+            {formatPKR(product.price)}
           </div>
 
           <div className="mt-8 rounded-xl border bg-slate-50 p-5">
@@ -80,8 +82,12 @@ export default async function ProductPage({
             </p>
           </div>
 
-          <div className="mt-8">
+          <div className="mt-8 flex flex-wrap items-center gap-3">
             <FavoriteButton product={product} />
+            <AddToCartButton
+              product={product}
+              className="inline-flex items-center justify-center rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500"
+            />
           </div>
 
         </div>
@@ -114,7 +120,7 @@ export default async function ProductPage({
                 </h3>
 
                 <p className="mt-2 font-bold text-indigo-600">
-                  PKR {Math.round(item.price * 83)}
+                  {formatPKR(item.price)}
                 </p>
 
                 <div className="mt-2">

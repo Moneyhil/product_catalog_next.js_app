@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import type { Product } from '@/lib/types';
 import FavoriteButton from '@/components/FavoriteButton';
+import AddToCartButton from '@/components/AddToCartButton';
+import { formatPKR } from '@/lib/currency';
 import RatingStars from './RatingStars';
 
 interface ProductCardProps {
@@ -10,7 +12,7 @@ interface ProductCardProps {
 }
 
 export default function ProductCard({ product }: ProductCardProps) {
-  const price = `PKR ${Math.round(product.price * 83)}`;
+  const price = formatPKR(product.price);
 
   return (
     <div className="group rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-1 hover:shadow-md">
@@ -50,6 +52,13 @@ export default function ProductCard({ product }: ProductCardProps) {
 
         </div>
       </Link>
+
+      <div className="mt-4">
+        <AddToCartButton
+          product={product}
+          className="w-full inline-flex items-center justify-center rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700"
+        />
+      </div>
 
     </div>
   );
