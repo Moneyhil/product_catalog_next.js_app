@@ -27,14 +27,13 @@ const FIRESTORE_DATABASE_ID =
     : "(default)";
 
 const FIRESTORE_SETTINGS: FirestoreSettings = {
-  databaseId: FIRESTORE_DATABASE_ID,
   experimentalForceLongPolling: true,
   ignoreUndefinedProperties: true,
 };
 
 function getClientFirestore(app: FirebaseApp): Firestore {
   try {
-    return initializeFirestore(app, FIRESTORE_SETTINGS);
+    return initializeFirestore(app, FIRESTORE_SETTINGS, FIRESTORE_DATABASE_ID);
   } catch {
     return getFirestore(app);
   }
