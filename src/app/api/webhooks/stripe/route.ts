@@ -340,6 +340,62 @@ async function applyCheckoutSessionCompleted(
       ? ((await orderSnapshot.data()) as Partial<Order> | undefined)
       : undefined;
 
+    // === ALL TRANSACTION READS FIRST (Firestore invariant: reads before any writes) ===
+    const stampedInvoiceIdPresent =
+      typeof existingOrder?.invoiceId === "string" &&
+      existingOrder.invoiceId.length > 0;
+    const stampedInvoiceNumberPresent =
+      typeof existingOrder?.invoiceNumber === "string" &&
+      existingOrder.invoiceNumber.length > 0;
+
+    const stampedInvoiceDocSnap = stampedInvoiceIdPresent
+      ? await transaction.get(
+          adminDb.collection("invoices").doc(existingOrder!.invoiceId!),
+        )
+      : null;
+    const hasStampedInvoiceDoc = stampedInvoiceDocSnap
+      ? stampedInvoiceDocSnap.exists
+      : false;
+
+    const invoiceByOrderIdSnap = !hasStampedInvoiceDoc
+      ? await transaction.get(
+          adminDb
+            .collection("invoices")
+            .where("orderId", "==", orderId)
+            .limit(1),
+        )
+      : null;
+    const invoiceDocByOrderIdExists = invoiceByOrderIdSnap
+      ? !invoiceByOrderIdSnap.empty
+      : false;
+
+    let strayInvoiceId: string | null = null;
+    let strayInvoiceNumber: string | null = null;
+    if (invoiceDocByOrderIdExists && !stampedInvoiceIdPresent) {
+      const strayDoc = invoiceByOrderIdSnap!.docs[0]!;
+      const strayData = strayDoc.data() as Partial<Invoice>;
+      console.log(
+        `[invoice] existing invoice found (by orderId search): ${strayDoc.id} — will reuse for order ${orderId} instead of creating duplicate.`,
+      );
+      strayInvoiceId = strayDoc.id;
+      strayInvoiceNumber =
+        typeof strayData.invoiceNumber === "string" &&
+        strayData.invoiceNumber.length > 0
+          ? strayData.invoiceNumber
+          : generateInvoiceNumber(orderId);
+    }
+    repairInvoiceCapture.id = strayInvoiceId;
+    repairInvoiceCapture.number = strayInvoiceNumber;
+
+    const customerReference = adminDb
+      .collection("customers")
+      .doc(clerkUserId);
+    const customerSnapshot = await transaction.get(customerReference);
+    const existingCustomer = customerSnapshot.exists
+      ? ((await customerSnapshot.data()) as Partial<Customer> | undefined)
+      : undefined;
+    // === END OF ALL TRANSACTION READS ===
+
     const now = new Date().toISOString();
     const createdAt =
       typeof existingOrder?.createdAt === "string"
@@ -363,53 +419,14 @@ async function applyCheckoutSessionCompleted(
 
     const finalClerkId = clerkUserId;
 
-    const stampedInvoiceIdPresent =
-      typeof existingOrder?.invoiceId === "string" &&
-      existingOrder.invoiceId.length > 0;
-    const stampedInvoiceNumberPresent =
-      typeof existingOrder?.invoiceNumber === "string" &&
-      existingOrder.invoiceNumber.length > 0;
-
-    const hasStampedInvoiceDoc = stampedInvoiceIdPresent
-      ? (
-          await transaction.get(
-            adminDb.collection("invoices").doc(existingOrder!.invoiceId!),
-          )
-        ).exists
-      : false;
-
-    let invoiceDocByOrderIdExists = false;
-    if (!hasStampedInvoiceDoc) {
-      const invoiceByOrderIdSnap = await transaction.get(
-        adminDb
-          .collection("invoices")
-          .where("orderId", "==", orderId)
-          .limit(1),
-      );
-      invoiceDocByOrderIdExists = !invoiceByOrderIdSnap.empty;
-      if (invoiceDocByOrderIdExists && !stampedInvoiceIdPresent) {
-        const strayDoc = invoiceByOrderIdSnap.docs[0]!;
-        const strayData = strayDoc.data() as Partial<Invoice>;
-        console.log(
-          `[invoice] existing invoice found (by orderId search): ${strayDoc.id} — will reuse for order ${orderId} instead of creating duplicate.`,
-        );
-        repairInvoiceCapture.id = strayDoc.id;
-        repairInvoiceCapture.number =
-          typeof strayData.invoiceNumber === "string" &&
-          strayData.invoiceNumber.length > 0
-            ? strayData.invoiceNumber
-            : generateInvoiceNumber(orderId);
-      }
-    }
-
     const orderIsAlreadyPaid = existingOrder?.status === "paid";
     const invoiceAlreadyExists =
       hasStampedInvoiceDoc || invoiceDocByOrderIdExists;
 
     if (orderIsAlreadyPaid && invoiceAlreadyExists) {
       if (!stampedInvoiceIdPresent) {
-        const repairId = repairInvoiceCapture.id!;
-        const repairNumber = repairInvoiceCapture.number!;
+        const repairId = strayInvoiceId!;
+        const repairNumber = strayInvoiceNumber!;
         transaction.set(
           orderReference,
           { invoiceId: repairId, invoiceNumber: repairNumber, updatedAt: now },
@@ -480,14 +497,6 @@ async function applyCheckoutSessionCompleted(
       };
 
       transaction.set(orderReference, orderUpdate, { merge: true });
-
-      const customerReference = adminDb
-        .collection("customers")
-        .doc(finalClerkId);
-      const customerSnapshot = await transaction.get(customerReference);
-      const existingCustomer = customerSnapshot.exists
-        ? ((await customerSnapshot.data()) as Partial<Customer> | undefined)
-        : undefined;
 
       if (
         existingCustomer &&
