@@ -7,12 +7,6 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   const { userId } = await auth();
-  if (!userId) {
-    return NextResponse.json(
-      { error: "You must be signed in to verify a session." },
-      { status: 401 },
-    );
-  }
 
   let body: unknown;
   try {
@@ -55,7 +49,7 @@ export async function POST(request: Request) {
         ? session.metadata.clerkId
         : null) ?? null;
 
-    if (sessionClerkId && sessionClerkId !== userId) {
+    if (userId && sessionClerkId && sessionClerkId !== userId) {
       return NextResponse.json(
         { error: "That session does not belong to you." },
         { status: 403 },
@@ -79,12 +73,13 @@ export async function POST(request: Request) {
       "status" in session.payment_intent
         ? {
             id:
-              typeof (session.payment_intent as { id?: unknown }).id === "string"
+              typeof (session.payment_intent as { id?: unknown }).id ===
+              "string"
                 ? ((session.payment_intent as { id: string }).id as string)
                 : null,
             status:
-              typeof (session.payment_intent as { status?: unknown }).status ===
-              "string"
+              typeof (session.payment_intent as { status?: unknown })
+                .status === "string"
                 ? ((session.payment_intent as { status: string })
                     .status as string)
                 : null,

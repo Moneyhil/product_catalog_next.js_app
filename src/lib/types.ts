@@ -55,6 +55,12 @@ export interface Order {
   status: OrderStatus;
   stripeSessionId?: string;
   stripePaymentIntentId?: string;
+  invoiceId?: string;
+  invoiceNumber?: string;
+  notificationStatus?: "pending" | "sent" | "failed";
+  notificationSentAt?: string;
+  notificationFailedAt?: string;
+  notificationError?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -66,6 +72,31 @@ export interface Customer {
   email: string | null;
   totalOrders: number;
   totalSpent: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Invoice {
+  id: string;
+  orderId: string;
+  clerkId: string;
+  customerEmail: string | null;
+  customerName: string | null;
+  items: OrderItem[];
+  subtotalUsd: number;
+  totalUsd: number;
+  amountPaidUsd: number;
+  currency: "usd";
+  status: "paid" | "refunded" | "void";
+  shipping: OrderShipping | null;
+  stripePaymentIntentId: string | null;
+  invoiceNumber: string;
+  notificationStatus?: "pending" | "sent" | "failed";
+  notificationSentAt?: string;
+  notificationFailedAt?: string;
+  notificationError?: string;
+  issuedAt: string;
+  paidAt: string;
   createdAt: string;
   updatedAt: string;
 }

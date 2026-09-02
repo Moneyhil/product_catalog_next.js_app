@@ -37,7 +37,10 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
   }
 
   return (
-    <ClerkProvider telemetry={false}>
+    <ClerkProvider
+      telemetry={false}
+      authConfig={{ passwordEnabled: false }}
+    >
       <html
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}

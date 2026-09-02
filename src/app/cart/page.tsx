@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { useCart } from "@/hooks/useCart";
 import { useToast } from "@/components/Toast";
@@ -10,49 +10,23 @@ import { formatPKR, formatUSD } from "@/lib/currency";
 
 export default function CartPage() {
   const router = useRouter();
-  const { isSignedIn } = useAuth();
+  const searchParams = useSearchParams();
+  const { isSignedIn, isLoaded: authLoaded } = useAuth();
   const {
     items,
     itemCount,
     total,
-    isLoaded,
+    isLoaded: cartLoaded,
     increaseQuantity,
     decreaseQuantity,
     removeFromCart,
     clearCart,
   } = useCart();
+  const isLoaded = cartLoaded && authLoaded;
   const { showToast, dismissToast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
-
-  if (!isLoaded) {
-    return (
-      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
-        <h1 className="text-2xl font-semibold text-slate-900">Your cart</h1>
-        <div className="mt-10 flex items-center gap-3 rounded-full border border-slate-200 bg-white px-5 py-3 shadow-sm">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-slate-900" />
-          <span className="text-sm text-slate-600">Loading cart…</span>
-        </div>
-      </main>
-    );
-  }
-
-  if (items.length === 0) {
-    return (
-      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
-        <h1 className="text-2xl font-semibold text-slate-900">Your cart</h1>
-        <div className="mt-10 rounded-2xl border border-slate-200 bg-white p-10 text-center shadow-sm">
-          <p className="text-slate-600">Your cart is empty.</p>
-          <Link
-            href="/"
-            className="mt-6 inline-flex items-center justify-center rounded-full bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700"
-          >
-            Browse products
-          </Link>
-        </div>
-      </main>
-    );
-  }
+  const autoRanRef = useRef(false);
 
   const handleClear = () => {
     clearCart();
@@ -65,17 +39,8 @@ export default function CartPage() {
     showToast({ message: `${title} removed from cart.` });
   };
 
-  async function handleCheckout(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setCheckoutError(null);
-
-    if (!isSignedIn) {
-      router.push("/sign-in?redirect_url=/cart");
-      return;
-    }
-
+  async function startCheckout(): Promise<void> {
     if (items.length === 0 || isSubmitting) return;
-
     let toastId: string | null = null;
     try {
       setIsSubmitting(true);
@@ -84,10 +49,12 @@ export default function CartPage() {
         duration: 1000 * 60 * 5,
       });
 
+      const body: Record<string, unknown> = { items };
+
       const response = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items }),
+        body: JSON.stringify(body),
       });
 
       const contentType = response.headers.get("content-type") ?? "";
@@ -126,6 +93,62 @@ export default function CartPage() {
         dismissToast(toastId);
       }
     }
+  }
+
+  async function handleCheckout(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCheckoutError(null);
+
+    if (items.length === 0 || isSubmitting) return;
+
+    if (!isSignedIn) {
+      router.push(
+        `/sign-up?redirect_url=${encodeURIComponent("/cart?auto_checkout=1")}`,
+      );
+      return;
+    }
+
+    await startCheckout();
+  }
+
+  useEffect(() => {
+    if (!isLoaded || autoRanRef.current) return;
+    if (!isSignedIn) return;
+    if (searchParams.get("auto_checkout") !== "1") return;
+    if (items.length === 0) return;
+    if (isSubmitting) return;
+
+    autoRanRef.current = true;
+    void startCheckout();
+  }, [isLoaded, isSignedIn, searchParams, items.length, isSubmitting]);
+
+  if (!isLoaded) {
+    return (
+      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
+        <h1 className="text-2xl font-semibold text-slate-900">Your cart</h1>
+        <div className="mt-10 flex items-center gap-3 rounded-full border border-slate-200 bg-white px-5 py-3 shadow-sm">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-slate-900" />
+          <span className="text-sm text-slate-600">Loading cart…</span>
+        </div>
+      </main>
+    );
+  }
+
+  if (items.length === 0) {
+    return (
+      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
+        <h1 className="text-2xl font-semibold text-slate-900">Your cart</h1>
+        <div className="mt-10 rounded-2xl border border-slate-200 bg-white p-10 text-center shadow-sm">
+          <p className="text-slate-600">Your cart is empty.</p>
+          <Link
+            href="/"
+            className="mt-6 inline-flex items-center justify-center rounded-full bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700"
+          >
+            Browse products
+          </Link>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -293,12 +316,33 @@ export default function CartPage() {
               {isSubmitting
                 ? "Redirecting to checkout…"
                 : isSignedIn
-                ? "Proceed to checkout"
-                : "Sign in to checkout"}
+                ? "Checkout"
+                : "Sign up & continue to checkout"}
             </button>
           </form>
+
+          {!isSignedIn ? (
+            <p className="w-full text-center text-xs text-slate-500">
+              Already have an account?{" "}
+              <button
+                type="button"
+                onClick={() =>
+                  router.push(
+                    `/sign-in?redirect_url=${encodeURIComponent(
+                      "/cart?auto_checkout=1",
+                    )}`,
+                  )
+                }
+                className="font-medium text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline"
+              >
+                Sign in
+              </button>
+            </p>
+          ) : null}
+
           <p className="text-center text-xs text-slate-500">
             You will be redirected to Stripe to complete your payment securely.
+            Email, shipping address, and payment details are collected by Stripe.
           </p>
         </aside>
       </div>

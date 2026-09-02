@@ -72,6 +72,15 @@ export default async function OrderSuccessPage({ searchParams }: SearchParams) {
   const isPaid = order.status === "paid";
   const isPending = order.status === "pending";
 
+  const invoiceHref =
+    isPaid &&
+    typeof order.invoiceId === "string" &&
+    order.invoiceId.length > 0
+      ? `/account/invoices/${encodeURIComponent(order.invoiceId)}`
+      : isPaid
+      ? "/account/invoices"
+      : null;
+
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-16 sm:px-6 lg:px-8">
       <OrderSuccessClient
@@ -121,7 +130,7 @@ export default async function OrderSuccessPage({ searchParams }: SearchParams) {
             <div>
               <h1 className="text-2xl font-bold text-slate-900">
                 {isPaid
-                  ? "Thank you for your order"
+                  ? "Order Confirmed"
                   : "We're finalizing your order"}
               </h1>
               <p className="text-sm text-slate-500">
@@ -210,11 +219,19 @@ export default async function OrderSuccessPage({ searchParams }: SearchParams) {
           </div>
           <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
             <Link
-              href="/products"
+              href="/"
               className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
             >
               Keep browsing
             </Link>
+            {invoiceHref ? (
+              <Link
+                href={invoiceHref}
+                className="inline-flex items-center justify-center rounded-full bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-800"
+              >
+                View Invoice
+              </Link>
+            ) : null}
             <Link
               href="/account"
               className="inline-flex items-center justify-center rounded-full bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700"

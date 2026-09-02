@@ -4,69 +4,13 @@ import { auth } from "@clerk/nextjs/server";
 
 import { adminDb } from "@/lib/firebase/admin";
 import { formatPKR, formatUSD } from "@/lib/currency";
-import type { Order, OrderStatus } from "@/lib/types";
+import type { Invoice } from "@/lib/types";
 
 type RouteParams = {
   params: Promise<{
-    orderId: string;
+    invoiceId: string;
   }>;
 };
-
-type StatusBadgeTone =
-  | "neutral"
-  | "amber"
-  | "emerald"
-  | "rose"
-  | "slate";
-
-function toneForStatus(status: OrderStatus): StatusBadgeTone {
-  switch (status) {
-    case "paid":
-      return "emerald";
-    case "pending":
-      return "amber";
-    case "failed":
-      return "rose";
-    case "canceled":
-      return "slate";
-    case "draft":
-      return "neutral";
-    default:
-      return "neutral";
-  }
-}
-
-function StatusBadge({ status }: { status: OrderStatus }) {
-  const tone = toneForStatus(status);
-  const classes: Record<StatusBadgeTone, string> = {
-    neutral: "bg-slate-100 text-slate-700 ring-slate-200",
-    amber: "bg-amber-50 text-amber-700 ring-amber-200",
-    emerald: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-    rose: "bg-rose-50 text-rose-700 ring-rose-200",
-    slate: "bg-slate-50 text-slate-600 ring-slate-200",
-  };
-
-  const label =
-    status === "paid"
-      ? "Paid"
-      : status === "pending"
-      ? "Pending"
-      : status === "failed"
-      ? "Failed"
-      : status === "canceled"
-      ? "Canceled"
-      : status === "draft"
-      ? "Draft"
-      : (status as string).charAt(0).toUpperCase() + (status as string).slice(1);
-
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${classes[tone]}`}
-    >
-      {label}
-    </span>
-  );
-}
 
 function formatDate(value: unknown): string {
   if (typeof value !== "string") return "—";
@@ -83,7 +27,7 @@ function formatDate(value: unknown): string {
   }
 }
 
-function shortOrderId(value: string): string {
+function shortId(value: string): string {
   if (value.length <= 10) return value.toUpperCase();
   return `${value.slice(0, 6).toUpperCase()}…${value.slice(-4).toUpperCase()}`;
 }
@@ -92,46 +36,49 @@ function NotFound() {
   return (
     <div className="space-y-6 text-center">
       <header>
-        <h2 className="text-xl font-bold text-slate-900">Order not found</h2>
+        <h2 className="text-xl font-bold text-slate-900">Invoice not found</h2>
         <p className="mt-1 text-sm text-slate-600">
-          That order doesn&apos;t exist or isn&apos;t available yet.
+          That invoice doesn&apos;t exist or isn&apos;t available yet.
         </p>
       </header>
       <Link
-        href="/account/orders"
+        href="/account/invoices"
         className="inline-flex items-center justify-center rounded-full bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700"
       >
-        Back to orders
+        Back to invoices
       </Link>
     </div>
   );
 }
 
-export default async function AccountOrderDetailPage({ params }: RouteParams) {
+export default async function AccountInvoiceDetailPage({
+  params,
+}: RouteParams) {
   const { userId } = await auth();
   if (!userId) {
-    redirect(`/sign-in?redirect_url=/account/orders/${(await params).orderId}`);
+    redirect(
+      `/sign-in?redirect_url=/account/invoices/${(await params).invoiceId}`,
+    );
   }
 
-  const { orderId } = await params;
+  const { invoiceId } = await params;
 
-  const snapshot = await adminDb.collection("orders").doc(orderId).get();
+  const snapshot = await adminDb.collection("invoices").doc(invoiceId).get();
   if (!snapshot.exists) {
     return <NotFound />;
   }
 
-  const order = snapshot.data() as Partial<Order>;
-  const ownsOrder = order.clerkId === userId;
-  const status = (order.status ?? "pending") as OrderStatus;
+  const invoice = snapshot.data() as Partial<Invoice>;
+  const ownsInvoice = invoice.clerkId === userId;
 
-  if (!ownsOrder || status === "draft") {
+  if (!ownsInvoice) {
     return <NotFound />;
   }
 
-  const items = Array.isArray(order.items) ? order.items : [];
-  const totalUsd = order.amountPaidUsd ?? order.totalUsd ?? 0;
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+  const totalUsd = invoice.amountPaidUsd ?? invoice.totalUsd ?? 0;
   const subtotalUsd =
-    order.subtotalUsd ??
+    invoice.subtotalUsd ??
     items.reduce(
       (sum, item) => sum + (item.price ?? 0) * (item.quantity ?? 0),
       0,
@@ -140,52 +87,63 @@ export default async function AccountOrderDetailPage({ params }: RouteParams) {
     (sum, item) => sum + (item.quantity ?? 0),
     0,
   );
+  const invoiceNumber =
+    typeof invoice.invoiceNumber === "string" && invoice.invoiceNumber.length > 0
+      ? invoice.invoiceNumber
+      : shortId(snapshot.id);
+
+  const shippingAddress = invoice.shipping?.address ?? null;
+  const shippingName = invoice.shipping?.name ?? null;
+  const shippingPhone = invoice.shipping?.phone ?? null;
+  const hasShipping =
+    shippingName ||
+    shippingPhone ||
+    shippingAddress?.line1 ||
+    shippingAddress?.city ||
+    shippingAddress?.postalCode;
 
   return (
     <div className="space-y-8">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <Link
-            href="/account/orders"
+            href="/account/invoices"
             className="text-sm font-medium text-slate-500 hover:text-slate-700"
           >
-            ← Back to orders
+            ← Back to invoices
           </Link>
           <h2 className="mt-2 text-xl font-bold text-slate-900">
-            Order #{shortOrderId(snapshot.id)}
+            Invoice #{invoiceNumber}
           </h2>
           <p className="mt-1 text-sm text-slate-600">
-            {formatDate(order.createdAt)}
-            {order.customerEmail ? ` · ${order.customerEmail}` : null}
+            Issued {formatDate(invoice.issuedAt)}
+            {invoice.customerEmail ? ` · ${invoice.customerEmail}` : null}
           </p>
-          {typeof order.invoiceNumber === "string" &&
-          order.invoiceNumber.length > 0 ? (
+          {typeof invoice.orderId === "string" && invoice.orderId.length > 0 ? (
             <p className="mt-1 text-xs text-slate-500">
-              Invoice:&nbsp;
-              {typeof order.invoiceId === "string" ? (
-                <Link
-                  href={`/account/invoices/${encodeURIComponent(order.invoiceId)}`}
-                  className="font-medium text-slate-700 underline-offset-2 hover:underline"
-                >
-                  {order.invoiceNumber}
-                </Link>
-              ) : (
-                <span className="font-mono">{order.invoiceNumber}</span>
-              )}
+              Order:&nbsp;
+              <Link
+                href={`/account/orders/${encodeURIComponent(invoice.orderId)}`}
+                className="font-medium text-slate-700 underline-offset-2 hover:underline"
+              >
+                #{shortId(invoice.orderId)}
+              </Link>
             </p>
           ) : null}
         </div>
         <div className="flex items-start justify-end">
-          <StatusBadge status={status} />
+          <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
+          Paid
+        </span>
         </div>
       </header>
 
       {items.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-600">
-          No line items on this order.
-        </div>
-      ) : (
-        <div className="overflow-hidden rounded-2xl border border-slate-200 shadow-sm">
+        No line items on this invoice.
+      </div>
+    ) : (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50">
@@ -216,7 +174,7 @@ export default async function AccountOrderDetailPage({ params }: RouteParams) {
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 bg-white">
+              <tbody className="divide-y divide-slate-100">
                 {items.map((item) => {
                   const lineTotal = (item.price ?? 0) * (item.quantity ?? 0);
                   return (
@@ -235,9 +193,6 @@ export default async function AccountOrderDetailPage({ params }: RouteParams) {
                           <div className="min-w-0">
                             <p className="truncate font-semibold text-slate-900">
                               {item.title}
-                            </p>
-                            <p className="mt-0.5 text-xs text-slate-500">
-                              {formatPKR(item.price ?? 0)}
                             </p>
                           </div>
                         </div>
@@ -288,10 +243,10 @@ export default async function AccountOrderDetailPage({ params }: RouteParams) {
                 </tr>
                 <tr>
                   <td
-                    colSpan={3}
+                  colSpan={3}
                     className="px-4 py-3 text-right text-base font-semibold text-slate-900 sm:px-6"
                   >
-                    Total
+                    Total paid
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-right text-base font-semibold text-slate-900 sm:px-6">
                     <div>{formatUSD(totalUsd)}</div>
@@ -306,11 +261,57 @@ export default async function AccountOrderDetailPage({ params }: RouteParams) {
         </div>
       )}
 
-      {status === "pending" ? (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          Finalizing your payment. If you just paid, this can take a few
-          seconds — refresh the page to see the latest status.
-        </div>
+      {hasShipping ? (
+        <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:grid-cols-2 sm:p-8">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Bill to
+            </h3>
+            <div className="mt-2 text-sm text-slate-800">
+              <p className="font-medium text-slate-900">
+                {invoice.customerName ?? "Customer"}
+              </p>
+              {invoice.customerEmail ? (
+                <p className="text-slate-600">{invoice.customerEmail}</p>
+              ) : null}
+            </div>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+              Ship to
+            </h3>
+            <div className="mt-2 text-sm text-slate-800">
+              <p className="font-medium text-slate-900">
+                {shippingName ?? invoice.customerName ?? "Customer"}
+              </p>
+              {shippingPhone ? (
+                <p className="text-slate-600">{shippingPhone}</p>
+              ) : null}
+              {shippingAddress?.line1 ? (
+                <p className="text-slate-600">{shippingAddress.line1}</p>
+              ) : null}
+              {shippingAddress?.line2 ? (
+                <p className="text-slate-600">{shippingAddress.line2}</p>
+              ) : null}
+              {(shippingAddress?.city ||
+                shippingAddress?.state ||
+                shippingAddress?.postalCode) ? (
+                <p className="text-slate-600">
+                  {[
+                    shippingAddress?.city,
+                    shippingAddress?.state,
+                    shippingAddress?.postalCode,
+                  ]
+                    .filter(Boolean)
+                    .join(", ")}
+                </p>
+              ) : null}
+              {shippingAddress?.country ? (
+                <p className="text-slate-600">{shippingAddress.country}</p>
+              ) : null}
+            </div>
+          </div>
+        </section>
       ) : null}
     </div>
   );

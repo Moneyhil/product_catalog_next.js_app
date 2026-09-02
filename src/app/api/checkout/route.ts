@@ -48,7 +48,9 @@ async function resolveUserEmail(userId: string): Promise<string | null> {
     const client = await clerkClient();
     const fullUser = await client.users.getUser(userId);
     const primaryEmail = fullUser.emailAddresses.find(
-      (email) => email.id === (fullUser as { primaryEmailAddressId?: string }).primaryEmailAddressId,
+      (email) =>
+        email.id ===
+        (fullUser as { primaryEmailAddressId?: string }).primaryEmailAddressId,
     );
     return primaryEmail?.emailAddress ?? null;
   } catch {
@@ -86,12 +88,18 @@ function buildLineItems(items: OrderItem[]): Stripe.Checkout.SessionCreateParams
 
 export async function POST(request: Request) {
   const { userId } = await auth();
-
   if (!userId) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+    return Response.json(
+      { error: "Authentication required. Please sign in before checkout." },
+      { status: 401 },
+    );
   }
 
-  let body: { items?: unknown; cancelUrl?: unknown; successUrlBase?: unknown };
+  let body: {
+    items?: unknown;
+    cancelUrl?: unknown;
+    successUrlBase?: unknown;
+  };
   try {
     body = await request.json();
   } catch {
@@ -117,6 +125,7 @@ export async function POST(request: Request) {
       id: orderId,
       clerkId: userId,
       email,
+      customerEmail: email,
       items,
       subtotalUsd: totals.subtotalUsd,
       totalUsd: totals.totalUsd,
@@ -166,6 +175,11 @@ export async function POST(request: Request) {
 
   let session: Stripe.Checkout.Session;
   try {
+    const metadata: Record<string, string> = {
+      orderId,
+      clerkId: userId,
+    };
+
     session = await stripe.checkout.sessions.create({
       mode: "payment",
       currency: "usd",
@@ -173,10 +187,7 @@ export async function POST(request: Request) {
       payment_method_types: ["card"],
       customer_email: email ?? undefined,
       client_reference_id: orderId,
-      metadata: {
-        orderId,
-        clerkId: userId,
-      },
+      metadata,
       shipping_address_collection: {
         allowed_countries: ["PK"],
       },

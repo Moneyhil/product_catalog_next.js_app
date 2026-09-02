@@ -1,5 +1,10 @@
-import { getApp, getApps, initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
+import {
+  initializeFirestore,
+  getFirestore,
+  type Firestore,
+  type FirestoreSettings,
+} from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -10,6 +15,30 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+function getClientApp(): FirebaseApp {
+  if (getApps().length > 0) return getApp();
+  return initializeApp(firebaseConfig);
+}
 
-export const db = getFirestore(app);
+const FIRESTORE_DATABASE_ID =
+  process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID &&
+  process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID.length > 0
+    ? process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID
+    : "(default)";
+
+const FIRESTORE_SETTINGS: FirestoreSettings = {
+  databaseId: FIRESTORE_DATABASE_ID,
+  experimentalForceLongPolling: true,
+  ignoreUndefinedProperties: true,
+};
+
+function getClientFirestore(app: FirebaseApp): Firestore {
+  try {
+    return initializeFirestore(app, FIRESTORE_SETTINGS);
+  } catch {
+    return getFirestore(app);
+  }
+}
+
+const app = getClientApp();
+export const db = getClientFirestore(app);

@@ -82,6 +82,7 @@ export default async function AccountLayout({
 
   const sections = [
     { href: "/account/orders", label: "Orders" },
+    { href: "/account/invoices", label: "Invoices" },
   ];
 
   return (

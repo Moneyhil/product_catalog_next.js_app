@@ -27,7 +27,7 @@ export function OrderSuccessClient({
   sessionId,
   initialStatus,
 }: Props) {
-  const { isSignedIn, isLoaded } = useAuth();
+  const { isLoaded } = useAuth();
   const router = useRouter();
 
   const [status, setStatus] = useState<OrderStatus>(initialStatus);
@@ -37,7 +37,6 @@ export function OrderSuccessClient({
 
   const verifyOnce = useCallback(async () => {
     if (!sessionId) return;
-    if (!isSignedIn) return;
 
     setAttempt((prev) => prev + 1);
 
@@ -94,7 +93,7 @@ export function OrderSuccessClient({
           : "Could not verify your session. Please refresh to try again.";
       setError(message);
     }
-  }, [sessionId, isSignedIn]);
+  }, [sessionId]);
 
   useEffect(() => {
     if (settled.current) return;
@@ -110,8 +109,6 @@ export function OrderSuccessClient({
       return;
     }
 
-    if (!isSignedIn) return;
-
     void verifyOnce();
 
     if (status !== "pending") return;
@@ -125,7 +122,7 @@ export function OrderSuccessClient({
     }, PENDING_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [isLoaded, isSignedIn, sessionId, status, verifyOnce, router]);
+  }, [isLoaded, sessionId, status, verifyOnce, router]);
 
   useEffect(() => {
     if (status !== initialStatus) {
@@ -136,14 +133,6 @@ export function OrderSuccessClient({
     }
     return;
   }, [status, initialStatus, router]);
-
-  if (!sessionId && !isSignedIn) {
-    return (
-      <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        Sign in to see the real-time payment status of your order.
-      </div>
-    );
-  }
 
   return (
     <div className="mb-4 space-y-3">

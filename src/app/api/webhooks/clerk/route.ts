@@ -39,6 +39,38 @@ function extractUserData(
   };
 }
 
+async function markClerkWebhookProcessed(
+  eventId: string,
+  eventType: string,
+): Promise<boolean> {
+  if (!eventId) return false;
+  try {
+    const docRef = adminDb.collection("webhook_events").doc(`clerk:${eventId}`);
+    const existing = await docRef.get();
+    if (existing.exists) {
+      console.warn(
+        `[clerk-webhook] Idempotency: skipping duplicate event ${eventId} (type=${eventType})`,
+      );
+      return false;
+    }
+    await docRef.set(
+      {
+        source: "clerk",
+        type: eventType,
+        receivedAt: new Date().toISOString(),
+      },
+      { merge: false },
+    );
+    return true;
+  } catch (error) {
+    console.error(
+      `[clerk-webhook] Failed idempotency check for event ${eventId}`,
+      error,
+    );
+    return true;
+  }
+}
+
 export async function POST(request: Request) {
   console.log("STEP 0: webhook route hit");
 
@@ -72,6 +104,11 @@ export async function POST(request: Request) {
 
   console.log("STEP 1: signature verified, event type =", event.type);
 
+  const shouldProcess = await markClerkWebhookProcessed(svixId, event.type);
+  if (!shouldProcess) {
+    return Response.json({ success: true, deduped: true });
+  }
+
   switch (event.type) {
     case "user.created": {
       let role = event.data.public_metadata.role;
@@ -90,7 +127,9 @@ export async function POST(request: Request) {
         }
       }
 
-      const userData = extractUserData(event.data as Parameters<typeof extractUserData>[0]);
+      const userData = extractUserData(
+        event.data as Parameters<typeof extractUserData>[0],
+      );
       const documentRef = adminDb.collection("users").doc(event.data.id);
       const existingDoc = await documentRef.get();
 
@@ -100,7 +139,8 @@ export async function POST(request: Request) {
         {
           ...userData,
           role: role as string,
-          createdAt: existingDoc.data()?.createdAt ?? new Date().toISOString(),
+          createdAt:
+            existingDoc.data()?.createdAt ?? new Date().toISOString(),
         },
         { merge: true },
       );
@@ -110,16 +150,22 @@ export async function POST(request: Request) {
     }
 
     case "user.updated": {
-      console.log("STEP 4: about to write to Firestore (user.updated)", event.data.id);
+      console.log(
+        "STEP 4: about to write to Firestore (user.updated)",
+        event.data.id,
+      );
 
-      const userData = extractUserData(event.data as Parameters<typeof extractUserData>[0]);
+      const userData = extractUserData(
+        event.data as Parameters<typeof extractUserData>[0],
+      );
       const documentRef = adminDb.collection("users").doc(event.data.id);
       const existingDoc = await documentRef.get();
 
       await documentRef.set(
         {
           ...userData,
-          createdAt: existingDoc.data()?.createdAt ?? new Date().toISOString(),
+          createdAt:
+            existingDoc.data()?.createdAt ?? new Date().toISOString(),
         },
         { merge: true },
       );

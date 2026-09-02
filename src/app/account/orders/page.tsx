@@ -100,11 +100,21 @@ export default async function AccountOrdersPage() {
       createdAt: data.createdAt ?? null,
       totalUsd: data.amountPaidUsd ?? data.totalUsd ?? 0,
       status: (data.status ?? "pending") as OrderStatus,
+      invoiceId:
+        typeof data.invoiceId === "string" && data.invoiceId.length > 0
+          ? data.invoiceId
+          : null,
+      invoiceNumber:
+        typeof data.invoiceNumber === "string" && data.invoiceNumber.length > 0
+          ? data.invoiceNumber
+          : null,
     } satisfies {
       id: string;
       createdAt: unknown;
       totalUsd: number;
       status: OrderStatus;
+      invoiceId: string | null;
+      invoiceNumber: string | null;
     };
   });
 
@@ -189,9 +199,27 @@ export default async function AccountOrdersPage() {
                         >
                           #{shortOrderId(order.id)}
                         </Link>
-                        <div className="mt-0.5 text-xs text-slate-500">
-                          {formatPKR(order.totalUsd)}
-                        </div>
+                        {order.invoiceNumber ? (
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            Inv:&nbsp;
+                            {order.invoiceId ? (
+                              <Link
+                                href={`/account/invoices/${encodeURIComponent(order.invoiceId)}`}
+                                className="font-medium text-slate-700 underline-offset-2 hover:underline"
+                              >
+                                {order.invoiceNumber}
+                              </Link>
+                            ) : (
+                              <span className="font-mono">
+                                {order.invoiceNumber}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            {formatPKR(order.totalUsd)}
+                          </div>
+                        )}
                       </td>
                       <td className="whitespace-nowrap px-4 py-4 text-slate-700 sm:px-6">
                         {formatDate(order.createdAt)}
