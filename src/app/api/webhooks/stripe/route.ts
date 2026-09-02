@@ -7,12 +7,6 @@ import { getStripeClient } from "@/lib/stripe";
 import type { Customer, Invoice, Order, OrderItem, OrderShipping } from "@/lib/types";
 import { sendOrderConfirmation } from "@/lib/email";
 
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
-
 type SettledSession = Stripe.Checkout.Session & {
   payment_intent: string | null;
   customer: string | null;
