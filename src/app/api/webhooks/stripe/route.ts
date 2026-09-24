@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Stripe } from "stripe";
 import { FieldValue } from "firebase-admin/firestore";
+import { clerkClient } from "@clerk/nextjs/server";
 
 import { adminDb } from "@/lib/firebase/admin";
 import { getStripeClient } from "@/lib/stripe";
@@ -181,8 +182,6 @@ async function applyCheckoutSessionCompleted(
   const customerEmail =
     typeof sessionCustomerDetails?.email === "string"
       ? sessionCustomerDetails.email
-      : typeof session.customer_email === "string"
-      ? session.customer_email
       : null;
   const customerName =
     typeof sessionCustomerDetails?.name === "string"
@@ -250,14 +249,28 @@ async function applyCheckoutSessionCompleted(
       }
     : null;
 
-  const metadataClerkId =
-    typeof session.metadata?.clerkId === "string"
-      ? session.metadata.clerkId
-      : null;
-  if (!metadataClerkId) {
+  if (!customerEmail) {
     throw new Error(
-      `[stripe-webhook] session.metadata.clerkId is missing for session ${sessionId ?? "unknown"} (BUG: checkout requires authenticated Clerk user)`,
+      `[stripe-webhook] payer email is missing (session.customer_details.email is null) for session ${sessionId ?? "unknown"}; cannot resolve or create Clerk user without verified email.`,
     );
+  }
+
+  let resolvedClerkUserId: string;
+  {
+    const client = await clerkClient();
+    const listResponse = await client.users.getUserList({
+      emailAddress: [customerEmail],
+    });
+    const matches = listResponse.data ?? [];
+    if (matches.length > 0) {
+      resolvedClerkUserId = matches[0].id;
+    } else {
+      const created = await client.users.createUser({
+        emailAddress: [customerEmail],
+        skipPasswordRequirement: true,
+      });
+      resolvedClerkUserId = created.id;
+    }
   }
 
   const metadataOrderId =
@@ -284,18 +297,6 @@ async function applyCheckoutSessionCompleted(
           `[stripe-webhook] session ${sessionId} resolved orderId=${resolvedOrderId} but orders/${resolvedOrderId} document does NOT exist in Firestore; treating as unresolved.`,
         );
         valid = false;
-      } else {
-        const doc = orderSnap.data() as Partial<Order>;
-        const docClerkId =
-          typeof doc.clerkId === "string" && doc.clerkId.length > 0
-            ? doc.clerkId
-            : null;
-        if (docClerkId && docClerkId !== metadataClerkId) {
-          console.warn(
-            `[stripe-webhook] session ${sessionId} resolved orderId=${resolvedOrderId} but orders/${resolvedOrderId}.clerkId (${docClerkId}) does NOT match session.metadata.clerkId (${metadataClerkId}); dropping suspect spoof and treating as unresolved.`,
-          );
-          valid = false;
-        }
       }
       if (!valid) resolvedOrderId = null;
     } catch (validateErr) {
@@ -322,9 +323,9 @@ async function applyCheckoutSessionCompleted(
     );
   }
 
-  const clerkUserId = metadataClerkId;
+  const clerkUserId = resolvedClerkUserId;
 
-  console.log(`[invoice] processing order: ${orderId}`);
+  console.log(`[invoice] processing order: ${orderId} (clerkUserId=${clerkUserId})`);
 
   // Boxed in an object so TypeScript cannot incorrectly narrow the fields to
   // `never` when they are assigned from within the runTransaction() callback.

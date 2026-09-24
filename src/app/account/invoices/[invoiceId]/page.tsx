@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { auth } from "@clerk/nextjs/server";
+import { auth, currentUser } from "@clerk/nextjs/server";
 
 import { adminDb } from "@/lib/firebase/admin";
 import { formatPKR, formatUSD } from "@/lib/currency";
@@ -60,6 +60,8 @@ export default async function AccountInvoiceDetailPage({
       `/sign-in?redirect_url=/account/invoices/${(await params).invoiceId}`,
     );
   }
+  const user = await currentUser();
+  const isAdmin = user?.publicMetadata.role === "admin";
 
   const { invoiceId } = await params;
 
@@ -71,7 +73,7 @@ export default async function AccountInvoiceDetailPage({
   const invoice = snapshot.data() as Partial<Invoice>;
   const ownsInvoice = invoice.clerkId === userId;
 
-  if (!ownsInvoice) {
+  if (!ownsInvoice && !isAdmin) {
     return <NotFound />;
   }
 

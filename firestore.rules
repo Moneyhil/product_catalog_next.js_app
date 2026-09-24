@@ -67,14 +67,10 @@ service cloud.firestore {
     // ---------- orders ----------
 
     function orderIsDraftShape(data) {
-      return data.keys().hasOnly([
-        "clerkId",
-        "items",
-        "total",
-        "status",
-        "createdAt"
-      ])
-        && data.status == "draft";
+      return data.status == "draft"
+        && (!("clerkId" in data)
+            || data.clerkId == null
+            || (isSignedIn() && data.clerkId == currentUid()));
     }
 
     function statusFieldChanged() {
@@ -87,9 +83,7 @@ service cloud.firestore {
       allow read: if isSignedIn()
         && resource.data.clerkId == currentUid();
 
-      allow create: if isSignedIn()
-        && request.resource.data.clerkId == currentUid()
-        && orderIsDraftShape(request.resource.data);
+      allow create: if orderIsDraftShape(request.resource.data);
 
       // Clients cannot change status. Server (Admin SDK) bypasses rules.
       allow update: if isSignedIn()

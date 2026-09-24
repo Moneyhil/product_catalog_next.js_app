@@ -1,32 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useState, type FormEvent } from "react";
 import { useCart } from "@/hooks/useCart";
 import { useToast } from "@/components/Toast";
 import { formatPKR, formatUSD } from "@/lib/currency";
 
 export default function CartPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const { isSignedIn, isLoaded: authLoaded } = useAuth();
   const {
     items,
     itemCount,
     total,
-    isLoaded: cartLoaded,
+    isLoaded,
     increaseQuantity,
     decreaseQuantity,
     removeFromCart,
     clearCart,
   } = useCart();
-  const isLoaded = cartLoaded && authLoaded;
   const { showToast, dismissToast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
-  const autoRanRef = useRef(false);
 
   const handleClear = () => {
     clearCart();
@@ -39,8 +32,12 @@ export default function CartPage() {
     showToast({ message: `${title} removed from cart.` });
   };
 
-  async function startCheckout(): Promise<void> {
+  async function handleCheckout(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCheckoutError(null);
+
     if (items.length === 0 || isSubmitting) return;
+
     let toastId: string | null = null;
     try {
       setIsSubmitting(true);
@@ -94,33 +91,6 @@ export default function CartPage() {
       }
     }
   }
-
-  async function handleCheckout(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setCheckoutError(null);
-
-    if (items.length === 0 || isSubmitting) return;
-
-    if (!isSignedIn) {
-      router.push(
-        `/sign-up?redirect_url=${encodeURIComponent("/cart?auto_checkout=1")}`,
-      );
-      return;
-    }
-
-    await startCheckout();
-  }
-
-  useEffect(() => {
-    if (!isLoaded || autoRanRef.current) return;
-    if (!isSignedIn) return;
-    if (searchParams.get("auto_checkout") !== "1") return;
-    if (items.length === 0) return;
-    if (isSubmitting) return;
-
-    autoRanRef.current = true;
-    void startCheckout();
-  }, [isLoaded, isSignedIn, searchParams, items.length, isSubmitting]);
 
   if (!isLoaded) {
     return (
@@ -313,32 +283,9 @@ export default function CartPage() {
               className="mt-2 inline-flex w-full items-center justify-center rounded-full bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={items.length === 0 || isSubmitting || !isLoaded}
             >
-              {isSubmitting
-                ? "Redirecting to checkout…"
-                : isSignedIn
-                ? "Checkout"
-                : "Sign up & continue to checkout"}
+              {isSubmitting ? "Redirecting to checkout…" : "Checkout"}
             </button>
           </form>
-
-          {!isSignedIn ? (
-            <p className="w-full text-center text-xs text-slate-500">
-              Already have an account?{" "}
-              <button
-                type="button"
-                onClick={() =>
-                  router.push(
-                    `/sign-in?redirect_url=${encodeURIComponent(
-                      "/cart?auto_checkout=1",
-                    )}`,
-                  )
-                }
-                className="font-medium text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline"
-              >
-                Sign in
-              </button>
-            </p>
-          ) : null}
 
           <p className="text-center text-xs text-slate-500">
             You will be redirected to Stripe to complete your payment securely.

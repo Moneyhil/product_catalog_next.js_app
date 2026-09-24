@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  getProductById,
-  getRelatedProducts,
-} from "@/lib/api";
+  getProductByIdServer,
+  getRelatedProductsServer,
+} from "@/lib/api-server";
 import FavoriteButton from "@/components/FavoriteButton";
 import AddToCartButton from "@/components/AddToCartButton";
 import { formatPKR } from "@/lib/currency";
@@ -19,14 +19,14 @@ export default async function ProductPage({
   let product;
 
   try {
-    product = await getProductById(id);
+    product = await getProductByIdServer(id);
   } catch {
     notFound();
   }
 
   if (!product) notFound();
 
-  const relatedProducts = await getRelatedProducts(
+  const relatedProducts = await getRelatedProductsServer(
     product.category,
     product.id
   );

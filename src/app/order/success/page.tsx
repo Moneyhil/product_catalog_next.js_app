@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { auth } from "@clerk/nextjs/server";
+import { SignIn } from "@clerk/nextjs";
 
 import { adminDb } from "@/lib/firebase/admin";
 import { formatPKR, formatUSD } from "@/lib/currency";
@@ -30,6 +32,8 @@ export default async function OrderSuccessPage({ searchParams }: SearchParams) {
     sessionId && sessionId.includes("CHECKOUT_SESSION_ID");
   const cleanedSessionId = isTemplateSessionId ? null : sessionId;
 
+  const { userId } = await auth();
+
   let order: Order | null = null;
   if (orderId) {
     const snapshot = await adminDb.collection("orders").doc(orderId).get();
@@ -38,6 +42,13 @@ export default async function OrderSuccessPage({ searchParams }: SearchParams) {
       order = { ...data, id: snapshot.id };
     }
   }
+
+  const orderHasClerkId =
+    !!order &&
+    typeof (order as Partial<Order> & { clerkId?: string | null }).clerkId ===
+      "string" &&
+    (order as Partial<Order> & { clerkId?: string | null }).clerkId!.length > 0;
+  const isGuestOrder = !userId && !orderHasClerkId;
 
   if (!orderId || !order) {
     return (
@@ -241,6 +252,30 @@ export default async function OrderSuccessPage({ searchParams }: SearchParams) {
           </div>
         </div>
       </div>
+
+      {isGuestOrder ? (
+        <div className="mt-10 rounded-3xl border border-indigo-200 bg-indigo-50/60 p-8 shadow-sm">
+          <div className="mb-6">
+            <h2 className="text-xl font-bold text-indigo-900">
+              Access Your Order History & Invoices
+            </h2>
+            <p className="mt-2 text-sm text-indigo-800">
+              A passwordless account has been created for you using the email
+              you entered at checkout. Sign in below with a magic link to
+              access this order, view invoices, and manage your account.
+              You&apos;ll be taken straight to your account dashboard after you
+              sign in.
+            </p>
+          </div>
+          <div className="flex items-start justify-center">
+            <SignIn
+              forceRedirectUrl="/account"
+              fallbackRedirectUrl="/account"
+              signUpUrl="/sign-up"
+            />
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

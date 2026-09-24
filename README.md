@@ -23,10 +23,10 @@ A responsive product catalog web app built with Next.js (App Router, Webpack) an
   - Email update API updates Clerk (source of truth) → webhook → Firestore
 - 🏷️ Default user role assignment (`customer`) written back to Clerk's public metadata on sign-up
 - 🔑 Role-based access control:
-  - **Admin page** (`/admin`): view all users + change their role
-  - **Customer**: browse products + manage favorites
-- 🛒 **Shopping Cart** (persistent per-user Firestore `carts/{clerkId}` + localStorage guest scaffolding; checkouts now require authenticated Clerk users)
-- 💳 **Stripe Hosted Checkout** → draft order in Firestore → atomic fulfillment via `checkout.session.completed` webhook
+  - **Admin area**: `/admin/customers`, `/admin/orders`, `/admin/leads`, plus invoice access bypass for `/account/invoices/[invoiceId]`
+  - **Customer**: browse products + manage favorites + view orders/invoices after payment
+- 🛒 **Shopping Cart** (guest-first checkout flow: add items without an account, pay on Stripe, then account creation resolves from the Stripe-verified email if needed)
+- 💳 **Stripe Hosted Checkout** → guest purchase path → webhook resolves/creates Clerk customer → order success page prompts magic-link sign-in → account shows orders/invoices
 - 📦 **Per-user Order history** (`/account/orders` → `/account/orders/[orderId]`) with bidirectional PKR price display, status badges, draft-filtered listing
 - 🧾 **Invoices** generated atomically for every paid order:
   - `/account/invoices` list page (paid invoices only, newest first)
@@ -62,7 +62,7 @@ product-catalog/
 │   │   ├── error.tsx                # Global error boundary
 │   │   ├── not-found.tsx            # Custom 404 page
 │   │   ├── cart/
-│   │   │   └── page.tsx             # Cart page — sign-up redirect + auto_checkout=1 auth-return flow
+│   │   │   └── page.tsx             # Cart page — guest-first checkout entry with Stripe payment
 │   │   ├── order/
 │   │   │   └── success/
 │   │   │       ├── page.tsx         # Order success — "Order Confirmed" + View Invoice CTA
@@ -111,7 +111,7 @@ product-catalog/
 │   │       ├── cart/
 │   │       │   └── route.ts         # GET + PUT — per-user carts/{clerkId}
 │   │       ├── checkout/
-│   │       │   ├── route.ts         # POST — auth(401 if missing) → draft order → Stripe Session
+│   │       │   ├── route.ts         # POST — guest-first checkout flow → draft order → Stripe Session
 │   │       │   └── verify-session/
 │   │       │       └── route.ts     # POST — session retrieve + order status+invoiceId
 │   │       ├── favorites/
@@ -281,6 +281,10 @@ The CLI prints its local `STRIPE_WEBHOOK_SECRET=whsec_…` in the first few line
 
 ## Authentication & Bidirectional User Sync
 
+### Password policy
+- Clerk password is disabled account-wide in the Clerk Dashboard; the app uses magic-link email sign-in only.
+- There is no password field in the app flow or Clerk account setup anywhere, and no code-level password config is required for this product.
+
 ### Sync Flow
 ```
 User signs up / signs in
@@ -327,6 +331,15 @@ To keep Clerk as the single source of truth, email changes go through Clerk firs
 3. Clerk fires `user.updated` webhook
 4. Webhook syncs the new email to Firestore
 
+## Admin Area
+
+Admin-only reads use the Firebase Admin SDK (`adminDb`) server-side. No Firestore rules changes are needed for the admin dashboards below.
+
+- `/admin/customers` — list every customer from `customers/*`, show name, email, total orders, lifetime spend, and date joined; click any customer to see their full order history (`clerkId == customer.id` query with `orderBy("createdAt","desc")` and client-side `clerkId` filter)
+- `/admin/orders` — list all paid orders (`status == "paid"`, newest first via `orderBy("createdAt","desc").limit(100)`, client-side status filter) with order ID, customer email, total, date, and invoice link; click a row for the full order detail view
+- `/admin/leads` — list pending/incomplete Stripe sessions (`status == "pending"`) for abandoned checkout follow-up with attempted order ID, customer email if available, cart value, created timestamp, and age
+- `/account/invoices/[invoiceId]` — admin invoice-view bypass: admins can open any customer's invoice regardless of ownership, while the customer-facing ownership gate remains in place for non-admin users
+
 ## Internal API Reference
 
 All routes below are Next.js Route Handlers.
@@ -338,8 +351,8 @@ All routes below are Next.js Route Handlers.
 | `/api/favorites` | GET | ✅ User | Get current user's favorite product IDs |
 | `/api/favorites` | PATCH | ✅ User | Add/remove favorite (`{ productId, action: "add"\|"remove" }`) |
 | `/api/cart` | GET + PUT | ✅ User | Firestore `carts/{clerkId}` get + replace; owner-gated by Clerk `auth()` userId |
-| `/api/checkout` | POST | ✅ User **(401 if missing)** | Cart non-empty → draft order → Stripe Hosted Checkout Session → `{ orderId, sessionUrl }` |
-| `/api/checkout/verify-session` | POST | ✅ User | `stripe.checkout.sessions.retrieve(id)` with `payment_intent` expand; returns `{ paymentStatus, orderId, customerEmail, invoiceId, invoiceNumber, status }` |
+| `/api/checkout` | POST | ✅ Guest-first + signed-in | Cart non-empty → draft order → Stripe Hosted Checkout Session → `{ orderId, sessionUrl }` |
+| `/api/checkout/verify-session` | POST | ✅ Guest-first + signed-in | `stripe.checkout.sessions.retrieve(id)` with `payment_intent` expand; returns `{ paymentStatus, orderId, customerEmail, invoiceId, invoiceNumber, status }` |
 | `/api/admin/set-role` | PATCH | ✅ Admin | Change a user's role (`{ targetClerkId, newRole: "admin"\|"customer" }`) |
 | `/api/user/sync` | POST | ✅ User | Force re-sync current user from Clerk → Firestore |
 | `/api/user/update-email` | PATCH | ✅ User | Update email in Clerk (triggers webhook → Firestore) |
@@ -348,14 +361,14 @@ All routes below are Next.js Route Handlers.
 ## Stripe Checkout & Webhook — Full Fulfillment Contract
 
 ```
-User at /cart (signed in)
-   clicks Checkout
+User at /cart
+   adds items and begins checkout
       ↓
-POST /api/checkout (auth() userId required — 401 otherwise)
+POST /api/checkout
    validates cart non-empty
-   creates draft orders/{orderId} { status:"draft", items, clerkId, total, createdAt }
-   creates Stripe Checkout Session (hosted, PK only, shipping PK, phone collection, success_url with {CHECKOUT_SESSION_ID} literal placeholder)
-   sets order.status = "pending" + stripeSessionId + metadata.orderId + metadata.clerkId + client_reference_id = orderId
+   creates a draft order in orders/{orderId} with status:"draft" and the current cart payload
+   creates a Stripe Checkout Session for the guest-first purchase flow
+   stores the order + session metadata needed to reconcile payment completion later
    returns { orderId, sessionUrl }
       ↓
 Redirect to Stripe → payment succeeds
@@ -363,14 +376,13 @@ Redirect to Stripe → payment succeeds
 Stripe fires checkout.session.completed → POST /api/webhooks/stripe
    readRawBody → stripe.webhooks.constructEvent
    isWebhookAlreadyProcessed(evtId)? return 200 dedup
-   applyCheckoutSessionCompleted(session):
-      (1) resolve orderId: findOrderIdBySessionId(sessionId) ?? metadata.orderId ?? client_reference_id
-      (2) validate order doc exists AND order.clerkId === session.metadata.clerkId (anti-spoof)
-      (3) adminDb.runTransaction → THREE BRANCHES (idempotent at every level):
-          Branch A: NOT paid → (a) write status=paid + persist customer/shipping/amount, (b) upsert customers/{clerkId} totals increment, (c) clear carts/{clerkId}, (d) build invoice doc + write invoices/{id}, (e) stamp orders/{orderId}.invoiceId
-          Branch B: PAID AND (stamped invoice doc exists OR stray invoice where orderId==orderId found) → if stamp missing on order, stamp now; else no-op; RETURN
-          Branch C: PAID BUT invoice MISSING → repair invoice NOW (skip customer totals increment, skip cart clear, skip paid-status flip, only write invoice + stamp order)
-      (4) markWebhookSuccessful(evtId) → webhook_events/{evtId} written ONLY AFTER success
+   resolve orderId and customer info from the session payload
+   validate the order doc and resolve or create the Clerk customer from the Stripe-verified email
+   adminDb.runTransaction → THREE BRANCHES (idempotent at every level):
+      Branch A: NOT paid → (a) write status=paid + persist customer/shipping/amount, (b) upsert customers/{clerkId} totals increment, (c) clear carts/{clerkId}, (d) build invoice doc + write invoices/{id}, (e) stamp orders/{orderId}.invoiceId
+      Branch B: PAID AND (stamped invoice doc exists OR stray invoice where orderId==orderId found) → if stamp missing on order, stamp now; else no-op; RETURN
+      Branch C: PAID BUT invoice MISSING → repair invoice NOW (skip customer totals increment, skip cart clear, skip paid-status flip, only write invoice + stamp order)
+   markWebhookSuccessful(evtId) → webhook_events/{evtId} written ONLY AFTER success
    void post-tx: sendOrderConfirmation (Novu) + write notificationStatus sent/failed to order + (if base doc exists) invoice
       ↓
 /order/success → "Order Confirmed" + View Invoice CTA
@@ -463,9 +475,10 @@ Orders list page avoids `status not-in` (causes composite index explosion) by us
 ## Key Implementation Notes
 
 - **Server vs Client Components:** Pages fetch product data on the server (async Server Components). Interactive elements — search, filtering, favoriting, role selection, cart steppers, success-page polling — are Client Components (`"use client"`).
+- **SSR data fetching:** Home and Product Detail pages now use `src/lib/api-server.ts` with the Admin SDK instead of the client SDK, which avoids the SSR permissions issue we hit and fixed tonight.
 - **Favorites persistence:** Per-user `favorites: number[]` array stored directly on each Firestore user document (not `localStorage`). Written server-side via the Admin SDK; read back via `FavoritesContext` which wraps `/api/favorites`.
 - **Shopping Cart persistence:** Guests use `localStorage["cart"]`. Signed-in users write to `carts/{clerkId}` via `/api/cart` (owner-gated by Clerk `auth().userId`). Merge-on-sign-in sums matching product quantities; localStorage is cleared after sync.
-- **Checkout is strictly auth-gated BEFORE Stripe runs:** `POST /api/checkout` enforces `auth().userId` (returns 401 if missing). The cart page redirects signed-out clicks via `/sign-up?redirect_url=/cart%3Fauto_checkout%3D1`, so the signed-in return page auto-runs checkout without requiring a second button press. **Guest (unauthenticated) checkout has been completely removed.**
+- **Guest-first checkout flow:** the cart allows checkout without creating an account. The customer checks out as a guest, pays on Stripe, and the webhook resolves or creates a Clerk account from the Stripe-verified email. After the order succeeds, the success page prompts a plain Clerk magic-link sign-in, and the account area shows the orders/invoices without any pre-payment account requirement.
 - **Idempotency defense-in-depth (Stripe webhook), outer → inner:**
   1. `isWebhookAlreadyProcessed(eventId)` reads `webhook_events/{eventId}` FIRST — returns 200 deduped.
   2. orderId resolves via 3 fallbacks; if all null, throws (HTTP 500) so Stripe retries.
@@ -480,6 +493,7 @@ Orders list page avoids `status not-in` (causes composite index explosion) by us
 - **Novu emails are non-blocking:** `sendOrderConfirmation` runs in a `void (async () => { try {...} catch {...} })()` block after the transaction commits. Failures persist `notificationStatus: "failed"` + `notificationError` on the order + (if base doc exists) invoice for later manual retry; never fail the payment success 200 back to Stripe.
 - **`createdAt` immutability:** Every write path reads an existing `createdAt` first and only sets it if absent, so original timestamps are preserved forever (orders, customers, users, invoices).
 - **Public routes** (see `src/proxy.ts`): `/`, `/products(.*)`, `/cart`, `/sign-in(.*)`, `/sign-up(.*)`, `/profile(.*)`, `/order/success(.*)`, `/post-sign-in(.*)`, `/api/webhooks(.*)`, `/api/test-firebase(.*)`, `/api/checkout(.*)`, `/api/checkout/verify-session(.*)`. Stripe server-to-server webhook hits never hit Clerk auth middleware.
+- **Authentication note:** password sign-in is disabled account-wide in the Clerk Dashboard; the product uses magic-link email sign-in only, no password field anywhere in the user flow.
 
 ## Scripts
 
@@ -526,7 +540,7 @@ The following capabilities were added on top of the base product catalog:
 - Non-blocking, dismissible toast stack anchored fixed bottom-center with 4s auto-dismiss; optional `<Link>` CTA on each toast.
 - **Signed-out favorites guard:** clicking the heart on `FavoriteButton.tsx` while signed out triggers a sign-up prompt toast ("Create an account to track favorites…") with `/sign-up` CTA instead of making the API call.
 
-### Shopping Cart (Guest + Signed-in; Strict Auth Before Stripe)
+### Shopping Cart + Guest-First Checkout
 - **`CartContext`** (`src/context/CartContext.tsx`) + `useCart()` hook.
   - **Guests:** `localStorage["cart"]` (`{ id, title, price, image, quantity }[]`).
   - **Signed-in users:** `GET` / `PUT` `/api/cart` → top-level Firestore collection `carts/{clerkId} { items: CartItem[], updatedAt }`.
@@ -535,20 +549,16 @@ The following capabilities were added on top of the base product catalog:
 - **Cart UI** (`/cart/page.tsx`):
   - Unit price, line total, and grand total shown in both USD and **PKR** (`USD × 83` via centralized `formatPKR()` helper).
   - Quantity +/- steppers + remove buttons.
-  - **Auth-first flow (no more unauthenticated Stripe):** Signed-out cart clicks on the "Checkout" button do NOT call `/api/checkout`. Instead they redirect to **`/sign-up?redirect_url=<encoded /cart?auto_checkout=1>`**. After Clerk sign-up/sign-in succeeds the browser returns to `/cart?auto_checkout=1`, and a `useEffect` with an `autoRanRef` guard fires `POST /api/checkout` **one time, automatically, without a second button press**.
-  - Signed-in users POST to `/api/checkout` → redirects to Stripe hosted checkout (see next section).
+  - **Guest-first flow:** shoppers can start checkout without an account. They pay on Stripe first, then the webhook resolves or creates a Clerk account using the Stripe-verified email. The order-success page then prompts a plain Clerk magic-link sign-in to access the account area.
+  - Signed-in users can still complete checkout through the same Stripe flow, but no sign-up-before-payment gate exists.
 - **Navbar cart badge** shows live item count.
-- **`/sign-in/[[...sign-in]]/page.tsx`** has an explicit `forceRedirectUrl` allowlist so dynamic `redirect_url=…` params do not trigger open-redirect behavior; unrecognized redirect URLs fall back to `/cart` (safe default).
 
-### Stripe Checkout & Payment Flow (Authenticated-Only)
-- **`/api/checkout/route.ts` (401 if Clerk userId missing):**
-  - First line runs `const { userId } = auth(); if (!userId) return Response.json({ error: "Unauthorized" }, { status: 401 })`. **Guest checkout is not possible.**
-  - Validates cart non-empty; rejects empty-cart POSTs.
-  - Resolves signed-in user's primary email via `resolveUserEmail(userId)` for Stripe `customer_email` prefill only (not identity).
-  - Creates a **draft** order in `orders/{orderId} { status: "draft", items, clerkId, total, createdAt, … }`.
-  - Creates a Stripe Checkout Session (`ui_mode: "hosted"`, `payment_method_types: ["card"]` only, `shipping_address_collection.allowed_countries: ["PK"]`, `phone_number_collection.enabled: true`, `metadata: { clerkId, orderId }`, `client_reference_id: orderId`).
-  - `success_url` uses literal concatenation for the `{CHECKOUT_SESSION_ID}` placeholder (URLSearchParams encodes `{}` which breaks Stripe substitution).
-  - Marks order `status: "pending" + stripeSessionId` before returning `{ orderId, sessionUrl }`.
+### Stripe Checkout & Payment Flow (Guest-First)
+- **`/api/checkout/route.ts`**
+  - Creates a Stripe checkout session from the current cart and order draft without requiring a Clerk account first.
+  - Resolves the customer email from Stripe/session data and, after payment succeeds, the webhook upserts the Clerk-linked customer record from that verified email.
+  - Creates a draft order in `orders/{orderId} { status: "draft", items, total, createdAt, … }` and then marks it pending while Stripe handles the payment.
+  - `success_url` uses the standard Stripe `{CHECKOUT_SESSION_ID}` placeholder pattern and the product flow continues through the order success page.
 - **`/order/success/page.tsx`** (server component — now shows **"Order Confirmed"** when paid):
   - Reads `order_id` + `session_id` from query; cleans the literal `{CHECKOUT_SESSION_ID}` placeholder if present.
   - Fetches order by Admin SDK; shows color-coded status badge, item count, total USD + "≈ PKR".
@@ -604,7 +614,7 @@ The following capabilities were added on top of the base product catalog:
 
 ### Account Area (`/account/*`) — Server-Side Protected, Invoices Sidebar Row Added
 - **`/account/layout.tsx`** (async server component):
-  - **No Clerk session** → redirect `/sign-in?redirect_url=/account`.
+  - **No Clerk session** → redirect to the Clerk sign-in flow.
   - **No `customers/{clerkId}` doc** → inline `UnlockAccountScreen` (no redirect loop): "Place your first order to unlock your customer dashboard…" **Start Shopping → `/products`** + Back to cart.
   - Customer exists → header stats card (display name, email, `N orders placed · lifetime spend X.XX USD`).
   - **Sidebar (UPDATED):** `Orders → /account/orders`, **Invoices → /account/invoices** (new), `Favorites → /account/favorites`, `Profile → /account/profile` (links out to Clerk hosted profile), `Settings → /account/settings`. Top navbar still links to Favorites + Profile separately; sidebar is a customer-focused navigation shell.
@@ -616,8 +626,7 @@ The following capabilities were added on top of the base product catalog:
    - **Root layout** (`src/app/layout.tsx`) is now `async`; calls `auth()` → if userId present, runs a server-side `adminDb.collection("customers").doc(userId).get()` existence check (try/catch guarded → `false` on error), and passes `showMyAccountLink: boolean` down to `<Navbar />`.
    - Navbar (`Navbar.jsx`) renders `<Link href="/account">Order History</Link>` **only when** `showMyAccountLink && isSignedIn`. Signed-out users and signed-in users with no first-order (no customer doc) never see the link.
 2. **Post-sign-in landing page smart redirect:**
-   - `src/app/post-sign-in/page.tsx` runs the user-sync block unchanged; then — **only when** no explicit `redirect_url` was passed (i.e. the user wasn't mid-flow to a protected page) and `dashboardTarget` from the sanitizer is empty and the user is non-admin — checks `customers/{user.id}.exists` and **redirects to `/account`** for returning customers instead of dropping them at `/`.
-   - Explicit `redirect_url` always wins; admins still go to `/admin` as before; brand-new signups with no orders keep the original default of `/`.
+   - `src/app/post-sign-in/page.tsx` syncs the user and then routes returning customers to `/account`, non-admin users with no customer doc to `/`, and admins to `/admin` as appropriate.
 3. **"Continue Shopping / Start Shopping → /products" CTAs** already present in:
    - Account unlock screen (new customers)
    - Empty orders list
@@ -628,8 +637,7 @@ The following capabilities were added on top of the base product catalog:
 ### Middleware & Public Routes
 - **`src/proxy.ts`** (`clerkMiddleware` + `createRouteMatcher`):
   - Public routes include `/`, `/products(.*)`, `/cart`, `/sign-in(.*)`, `/sign-up(.*)`, `/profile(.*)`, `/order/success(.*)`, `/post-sign-in(.*)`, `/api/webhooks(.*)` (with an explicit `/api/webhooks/stripe` defensive entry), `/api/test-firebase(.*)`, `/api/checkout(.*)`, `/api/checkout/verify-session(.*)`.
-  - Matcher regex excludes `_next/static`, `_next/image`, favicon, and image assets; also excludes `/api/webhooks(.*)` from middleware enforcement so Stripe server-to-server POSTs are never 401'd.
-  - Signed-out hits on `/account*` bounce through `/sign-in?returnBackUrl=/post-sign-in?redirect_url=<protected path>` so the post-sign-in sync/redirect runs before navigation.
+  - Matcher regex excludes `_next/static`, `_next/image`, favicon, and image assets; also excludes `/api/webhooks(.*)` so Stripe server-to-server POSTs are not intercepted by middleware.
 
 ### Firebase Stability Fixes (Browser + Admin)
 - **Browser WebChannel transport timeouts ("Backend didn't respond within 10 seconds") fixed:** `src/lib/firebase/client.ts` now uses `initializeFirestore(app, { experimentalForceLongPolling: true, ignoreUndefinedProperties: true })` instead of `getFirestore()`. Users on restrictive corporates/mobile NATs no longer see the Firestore client SDK silently hang mid-list-read.
@@ -666,7 +674,7 @@ The following flows were explicitly removed from the codebase. Do not re-add wit
    - Deleted associated test routes (`src/app/api/__test-accept-token/route.ts`, `src/app/api/test-firebase/accept-token/route.ts` — confirmed no longer present).
    - Deleted `buildMagicSignInUrl`, `findOrCreateClerkUserId`, `resolveClerkUserIdByEmail`, `createClerkUserFromEmail`, and all `signInTokens.createSignInToken` logic from `src/lib/email.ts` and the webhook.
    - Deleted `magicSignInUrl` field from the `OrderConfirmationPayload` sent to Novu (Novu trigger no longer expects or links out to one-click sign-in tokens).
-   - Replaced everywhere by: **Clerk auth happens BEFORE `POST /api/checkout` is allowed to return 200.** See `/cart/page.tsx` auto_checkout redirect and `/api/checkout/route.ts` line-one `auth().userId` 401 guard.
+   - The old sign-up-before-payment flow is replaced by the current guest-first checkout flow: customers pay on Stripe first, and the webhook resolves or creates the Clerk account from the Stripe-verified email after the purchase succeeds.
 
 2. **Silent orderId-resolution short-circuits replaced by explicit throws:**
    - Old webhook used to `return;` (HTTP 200 OK) when `orderId` couldn't be resolved. Because the marker was written, Stripe never retried → orders permanently unpaid/invoiceless.
@@ -705,7 +713,7 @@ The following flows were explicitly removed from the codebase. Do not re-add wit
 3. **Firebase console (Auth → Settings → Authorized domains):** add the Vercel production/preview domains so Firebase client SDK can initialize from the browser.
 4. **Stripe Dashboard → Webhooks:** add hosted endpoint `https://<your-vercel-domain>/api/webhooks/stripe` listening to `checkout.session.completed`; place signing secret into `STRIPE_WEBHOOK_SECRET` env var. Enable payment methods = card only (disable Link/Apple Pay/Payment Request Button account-wide if they still appear per Stripe settings override). In Stripe → Checkout Settings → Set allowed countries = Pakistan (PK) + any extras you ship to; this matches the webhook `shipping_address_collection.allowed_countries=["PK"]` set in `/api/checkout`.
 5. **Firestore composite indexes (2 composites):** re-create `firebase.json` + `firestore.indexes.json` locally from the JSON blocks in this README, then run `firebase deploy --only firestore:rules,firestore:indexes`. Trigger an order list + invoices list load from a real signed-in user account after deployment; confirm no "FAILED_PRECONDITION 9 — composite index required" errors in browser console.
-6. **Post-deploy smoke test order:** (1) Sign up as fresh user → cart → auto_checkout → Stripe test card 4242 4242 4242 4242 (success) → confirm `/order/success` shows "Order Confirmed" + "View Invoice". (2) `/account/orders` shows the order. (3) `/account/invoices` shows INV-… entry; click through to detail. (4) Replay the same Stripe `evt_…` id from Dashboard → Developers → Webhooks → your endpoint → Logs → Resend. Confirm NO duplicate invoice docs appear and `/account/invoices` still shows exactly ONE row.
+6. **Post-deploy smoke test order:** (1) Add items to cart → guest checkout → Stripe test card 4242 4242 4242 4242 (success) → confirm `/order/success` shows "Order Confirmed" + "View Invoice". (2) `/account/orders` shows the order after the magic-link sign-in flow. (3) `/account/invoices` shows INV-… entry; click through to detail. (4) Replay the same Stripe `evt_…` id from Dashboard → Developers → Webhooks → your endpoint → Logs → Resend. Confirm NO duplicate invoice docs appear and `/account/invoices` still shows exactly ONE row.
 7. Redeploy env vars: `vercel env pull` is not needed; Vercel injects them on deploy. Trigger a production redeploy after env vars are set the first time so they take effect.
 8. **After first production deploy:** run `ONLY_ORDER_ID=<oldestBrokenOrderId> DRY_RUN=false node scripts/reconcile-missing-invoices.cjs` for the oldest invoice-less paid order first. If one order repairs cleanly, run the full scoped scan: `DRY_RUN=false node scripts/reconcile-missing-invoices.cjs`.
 
@@ -713,8 +721,8 @@ The following flows were explicitly removed from the codebase. Do not re-add wit
 - **New lib helpers:** `src/lib/currency.ts`, `src/lib/stripe.ts`, `src/lib/email.ts` (Novu trigger + payload), `src/lib/types.ts` extended with `Customer`, `CartItem`, `Order`, `OrderStatus`, `OrderShipping`, `Invoice`, plus `notificationStatus/notificationSentAt/notificationFailedAt/notificationError` on both `Order` and `Invoice`.
 - **Context / hooks:** `src/context/CartContext.tsx`, `src/hooks/useCart.ts`, `src/context/FavoritesContext.tsx`, `src/hooks/useFavorites.ts`.
 - **Components:** `src/components/Toast.tsx` (Provider + useToast), `FavoriteButton.tsx` (signed-out guard), `AddToCartButton.tsx`, Navbar updated with conditional customer link, `order-success-client.tsx` (payment-status polling, invoice-generation polling removed/simplified), Navbar.jsx + product JSX components retained.
-- **App routes:** `/cart/page.tsx` (auth-first auto_checkout), `/order/success/page.tsx` (title updated → "Order Confirmed" + new View Invoice CTA) + `order-success-client.tsx`, `/account/layout.tsx` + `/account/page.tsx` (redirect) + `/account/orders/page.tsx` (removed not-in filter) + `/account/orders/[orderId]/page.tsx` (View Invoice link), `/account/invoices/page.tsx` (new list) + `/account/invoices/[invoiceId]/page.tsx` (new detail), `/account/favorites/page.tsx`, `/account/profile/page.tsx`, `/account/settings/page.tsx`, `/sign-in/[[...sign-in]]/page.tsx` (redirect_url allowlist), `/post-sign-in/page.tsx` extended (customer-aware redirect).
-- **API routes:** `/api/cart/route.ts`, `/api/checkout/route.ts` (userId 401-at-top + guest flow deleted), `/api/checkout/verify-session/route.ts` (now returns order's `invoiceId/invoiceNumber` for polling), `/api/webhooks/stripe/route.ts` (raw body + 3-branch idempotency + invoice atomic write + notificationStatus guard + non-sensitive [invoice] logs + explicit throws instead of silent returns), `/api/webhooks/clerk/route.ts` (Svix dedup via `webhook_events`).
+- **App routes:** `/cart/page.tsx` (guest-first checkout), `/order/success/page.tsx` (title updated → "Order Confirmed" + new View Invoice CTA) + `order-success-client.tsx`, `/account/layout.tsx` + `/account/page.tsx` (redirect) + `/account/orders/page.tsx` (removed not-in filter) + `/account/orders/[orderId]/page.tsx` (View Invoice link), `/account/invoices/page.tsx` (new list) + `/account/invoices/[invoiceId]/page.tsx` (new detail), `/account/favorites/page.tsx`, `/account/profile/page.tsx`, `/account/settings/page.tsx`, `/post-sign-in/page.tsx` extended (customer-aware redirect).
+- **API routes:** `/api/cart/route.ts`, `/api/checkout/route.ts` (guest-first checkout flow), `/api/checkout/verify-session/route.ts` (now returns order's `invoiceId/invoiceNumber` for polling), `/api/webhooks/stripe/route.ts` (raw body + 3-branch idempotency + invoice atomic write + notificationStatus guard + non-sensitive [invoice] logs + explicit throws instead of silent returns), `/api/webhooks/clerk/route.ts` (Svix dedup via `webhook_events`).
 - **Middleware / proxy:** `src/proxy.ts` — public routes expanded with `/cart`, `/api/checkout(.*)`, `/api/checkout/verify-session(.*)`; webhook carve-outs intact.
 - **Security:** `firestore.rules` (already written; deploy via Firebase CLI).
 - **Config / plumbing:** Root layout made `async` to run server-side `auth()` + customer-exists flag propagation to Navbar. `src/lib/firebase/client.ts` switched to `experimentalForceLongPolling:true` + `ignoreUndefinedProperties:true` to fix browser WebChannel hangs.

@@ -42,8 +42,8 @@ export type OrderStatus = "draft" | "pending" | "paid" | "failed" | "canceled";
 
 export interface Order {
   id: string;
-  clerkId: string;
-  email: string | null;
+  clerkId?: string | null;
+  email?: string | null;
   customerEmail?: string | null;
   amountPaidUsd?: number;
   phone?: string | null;

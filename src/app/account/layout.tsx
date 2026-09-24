@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { auth } from "@clerk/nextjs/server";
+import { auth, currentUser } from "@clerk/nextjs/server";
 
 import { adminDb } from "@/lib/firebase/admin";
 import type { Customer } from "@/lib/types";
@@ -71,8 +71,17 @@ export default async function AccountLayout({
     redirect("/sign-in?redirect_url=/account");
   }
 
+  const user = await currentUser();
+  const isAdmin = user?.publicMetadata.role === "admin";
   const customer = await resolveCustomer(userId);
   if (!customer) {
+    if (isAdmin) {
+      return (
+        <main className="mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
+          {children}
+        </main>
+      );
+    }
     return <UnlockAccountScreen />;
   }
 

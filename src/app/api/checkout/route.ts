@@ -1,4 +1,3 @@
-import { auth, clerkClient, currentUser } from "@clerk/nextjs/server";
 import type Stripe from "stripe";
 
 import { adminDb } from "@/lib/firebase/admin";
@@ -35,29 +34,6 @@ function validateCart(value: unknown): OrderItem[] {
   return items;
 }
 
-async function resolveUserEmail(userId: string): Promise<string | null> {
-  const user = await currentUser();
-  if (user) {
-    const primaryEmail = user.emailAddresses.find(
-      (email) => email.id === user.primaryEmailAddressId,
-    );
-    if (primaryEmail?.emailAddress) return primaryEmail.emailAddress;
-  }
-
-  try {
-    const client = await clerkClient();
-    const fullUser = await client.users.getUser(userId);
-    const primaryEmail = fullUser.emailAddresses.find(
-      (email) =>
-        email.id ===
-        (fullUser as { primaryEmailAddressId?: string }).primaryEmailAddressId,
-    );
-    return primaryEmail?.emailAddress ?? null;
-  } catch {
-    return null;
-  }
-}
-
 function computeTotals(items: OrderItem[]) {
   const subtotalUsd = items.reduce(
     (sum, item) => sum + item.price * item.quantity,
@@ -87,14 +63,6 @@ function buildLineItems(items: OrderItem[]): Stripe.Checkout.SessionCreateParams
 }
 
 export async function POST(request: Request) {
-  const { userId } = await auth();
-  if (!userId) {
-    return Response.json(
-      { error: "Authentication required. Please sign in before checkout." },
-      { status: 401 },
-    );
-  }
-
   let body: {
     items?: unknown;
     cancelUrl?: unknown;
@@ -116,16 +84,12 @@ export async function POST(request: Request) {
 
   const orderId = adminDb.collection("orders").doc().id;
   const totals = computeTotals(items);
-  const email = await resolveUserEmail(userId);
 
   let draftOrder: Order | null = null;
   try {
     const now = new Date().toISOString();
     draftOrder = {
       id: orderId,
-      clerkId: userId,
-      email,
-      customerEmail: email,
       items,
       subtotalUsd: totals.subtotalUsd,
       totalUsd: totals.totalUsd,
@@ -177,7 +141,6 @@ export async function POST(request: Request) {
   try {
     const metadata: Record<string, string> = {
       orderId,
-      clerkId: userId,
     };
 
     session = await stripe.checkout.sessions.create({
@@ -185,7 +148,6 @@ export async function POST(request: Request) {
       currency: "usd",
       ui_mode: "hosted",
       payment_method_types: ["card"],
-      customer_email: email ?? undefined,
       client_reference_id: orderId,
       metadata,
       shipping_address_collection: {
